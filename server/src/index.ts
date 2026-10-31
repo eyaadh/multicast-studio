@@ -14,7 +14,7 @@ import { config, managementIP, streamingIP, mediaDirectory } from './config.js'
 import { checkRoute, assertMulticast, listInterfaces } from './network.js'
 import { getMedia, listMedia, mediaPublic, mediaInUse, deleteMedia, saveChannel, getChannel, listChannels, deleteChannel,
   listProviders, getProvider, createProvider, removeProvider, providerInUse } from './db.js'
-import { validateHttpUrl, getProviderChannels, pageProviderChannels, invalidateProviderCache } from './providers.js'
+import { validateHttpUrl, verifyOfficeInput, getProviderChannels, pageProviderChannels, invalidateProviderCache } from './providers.js'
 import { startChannel, stopChannel, restartChannel, startAutostartChannels, snapshots, snapshot, running, forgetChannel, shutdown } from './supervisor.js'
 import { cleanName, importCandidates, registerImport, uploadVideo } from './media.js'
 import { isAuthenticated, verifyCredentials, makeSession, logout, loginAllowed, loginFailed, clearFailures } from './auth.js'
@@ -120,6 +120,19 @@ app.get('/api/providers/:id/channels',async c=>{
   try{
     const all=await getProviderChannels(provider,c.req.query('refresh')==='true')
     return c.json(pageProviderChannels(all,{page,limit,search,group}))
+  }catch(e){return c.json({error:e instanceof Error?e.message:String(e)},502)}
+})
+// Resolve one catalog entry for a best-effort browser preview. No server-side media proxy:
+// browser playback is subject to CORS, codecs, and upstream header restrictions.
+app.get('/api/providers/:id/channels/:key/preview',async c=>{
+  const provider=getProvider(c.req.param('id'))
+  if(!provider)return c.json({error:'Provider not found'},404)
+  try{
+    const all=await getProviderChannels(provider)
+    const entry=all.find(item=>item.key===c.req.param('key') || item.legacyKey===c.req.param('key'))
+    if(!entry)return c.json({error:'Channel no longer exists in this playlist'},404)
+    await verifyOfficeInput(entry.url)
+    return c.json({url:entry.url,requiresHeaders:Boolean(entry.userAgent||entry.referer||entry.cookie||Object.keys(entry.headers||{}).length)})
   }catch(e){return c.json({error:e instanceof Error?e.message:String(e)},502)}
 })
 app.get('/api/channels',c=>c.json(snapshots()))

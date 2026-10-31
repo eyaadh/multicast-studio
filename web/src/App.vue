@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { Activity, ArrowDownToLine, Check, CircleAlert, Clapperboard, Cpu, Database, Film,
-  HardDrive, Info, Layers3, LogOut, MonitorCog, Network, Pencil, Play, Plus, Radio,
+  HardDrive, Info, Layers3, LogOut, MonitorCog, Network, Pencil, Play, Plus, Radio, ChevronRight,
   RefreshCcw, RotateCw, Settings2, ShieldCheck, Square, Trash2, UploadCloud, Wifi, X } from 'lucide-vue-next'
 import { api, ApiError, jsonBody, uploadRaw } from './api'
+import SearchCombobox from './SearchCombobox.vue'
+import type Hls from 'hls.js'
 import type { Channel, ChannelForm, Media, Profile, RouteCheck, SystemInfo, Provider, ProviderChannel, ProviderChannelsResponse } from './types'
 
+type ChoiceValue=string|number|null
 type Tab='channels'|'providers'|'media'|'system'
 const activeTab=ref<Tab>('channels')
 const sessionLoading=ref(true),authenticated=ref(false),loginBusy=ref(false)
@@ -29,6 +32,94 @@ const modalOpen=ref(false),editingId=ref<string|null>(null),saving=ref(false),bu
 const toast=ref<{kind:'success'|'error';message:string}|null>(null)
 const live=ref(false),routeChecks=ref<Record<string,RouteCheck>>({}),routeLoading=ref(false)
 const previewMedia=ref<Media|null>(null)
+type StreamPreview = { name: string; group: string; url: string; requiresHeaders: boolean }
+const previewStream=ref<StreamPreview|null>(null)
+const previewVideo=ref<HTMLVideoElement|null>(null)
+const previewLoading=ref(false),previewError=ref('')
+let previewPlayer:Hls|null=null
+let previewRequest=0
+const providerKindOptions=[{value:'m3u',label:'Extended M3U'},{value:'json',label:'JSON channel catalog'}]
+const sourceTypeOptions=[{value:'media',label:'Local video (loop)'},{value:'live',label:'Live internet stream'}]
+const profileOptions=Object.entries({h264:'H.264 / AAC',mpeg4:'MPEG-4 Part 2 / MP2',mpeg2:'MPEG-2 / MP2',copy:'Direct copy'}).map(([value,label])=>({value,label}))
+const resolutionOptions=[{value:'720x576',label:'720 × 576 (SD PAL)'},{value:'1280x720',label:'1280 × 720 (HD)'},{value:'1920x1080',label:'1920 × 1080 (FHD)'}]
+const frameRateOptions=[25,30,50,60].map(value=>({value,label:`${value} fps`}))
+const mediaOptions=computed(()=>[{value:null,label:'Select a video',disabled:true},...media.value.map(item=>({value:item.id,label:item.name}))])
+const importOptions=computed(()=>[{value:'',label:'Select video from import directory'},...candidates.value.map(value=>({value,label:value}))])
+const groupOptions=computed(()=>[{value:'',label:'All groups'},...providerGroups.value.map(value=>({value,label:value}))])
+const resolution=computed({get:()=>`${currentForm.value.width}x${currentForm.value.height}`,set:(value:string)=>{
+  const [width,height]=value.split('x').map(Number)
+  currentForm.value.width=width||1280;currentForm.value.height=height||720
+}})
+function setSourceType(value:ChoiceValue){
+  if(value!=='media'&&value!=='live')return
+  currentForm.value.sourceType=value
+  switchSourceType()
+}
+function setProfile(value:ChoiceValue){
+  if(value!=='h264'&&value!=='mpeg4'&&value!=='mpeg2'&&value!=='copy')return
+  currentForm.value.profile=value
+  onProfileChange()
+}
+function closeStreamPreview(){
+  previewRequest++
+  previewPlayer?.destroy();previewPlayer=null
+  if(previewVideo.value){previewVideo.value.pause();previewVideo.value.removeAttribute('src');previewVideo.value.load()}
+  previewStream.value=null;previewError.value='';previewLoading.value=false
+}
+async function playStreamPreview(url:string,requestId:number){
+  await nextTick()
+  if(requestId!==previewRequest)return
+  const video=previewVideo.value
+  if(!video)return
+  try{
+    const {default:HlsPlayer}=await import('hls.js')
+    if(requestId!==previewRequest)return
+    const isHls=/\.m3u8(?:$|[?#])/i.test(url) || !/\.(?:mp4|webm|m4v)(?:$|[?#])/i.test(url)
+    if(isHls && HlsPlayer.isSupported()){
+      const player=new HlsPlayer({enableWorker:true,lowLatencyMode:false})
+      previewPlayer=player
+      player.on(HlsPlayer.Events.ERROR,(_event,data)=>{
+        if(data.fatal && requestId===previewRequest)previewError.value='Browser playback failed. The source may be offline, restricted, or blocked by CORS.'
+      })
+      player.loadSource(url)
+      player.attachMedia(video)
+    }else if(video.canPlayType('application/vnd.apple.mpegurl') || !isHls){
+      video.src=url
+    }else{
+      previewError.value='This browser does not support HLS preview.'
+    }
+  }catch{
+    if(requestId===previewRequest)previewError.value='Unable to initialize the browser video player.'
+  }finally{if(requestId===previewRequest)previewLoading.value=false}
+}
+async function previewProviderChannel(entry:ProviderChannel){
+  closeStreamPreview()
+  const requestId=previewRequest
+  previewStream.value={name:entry.name,group:entry.group,url:'',requiresHeaders:false}
+  previewLoading.value=true
+  try{
+    const response=await api<{url:string;requiresHeaders:boolean}>(`/providers/${selectedProviderId.value}/channels/${encodeURIComponent(entry.key)}/preview`)
+    if(requestId!==previewRequest)return
+    previewStream.value={...previewStream.value!,...response}
+    if(response.requiresHeaders){
+      previewError.value='This stream requires custom HTTP headers. Browser preview is unavailable, but FFmpeg may still broadcast it.'
+      previewLoading.value=false
+      return
+    }
+    await playStreamPreview(response.url,requestId)
+  }catch(error){if(requestId===previewRequest){previewError.value=error instanceof Error?error.message:String(error);previewLoading.value=false}}
+}
+function previewDirectStream(){
+  const url=currentForm.value.streamUrl?.trim()
+  if(!url){notice('Enter a live stream URL first','error');return}
+  try{const parsed=new URL(url);if(!['https:','http:'].includes(parsed.protocol))throw Error();closeStreamPreview()
+    const requestId=previewRequest
+    previewStream.value={name:currentForm.value.name||'Direct live stream',group:'Direct URL',url,requiresHeaders:false}
+    previewLoading.value=true
+    void playStreamPreview(url,requestId)
+  }catch{notice('Enter a valid HTTP(S) stream URL','error')}
+}
+
 let events:EventSource|null=null
 let interval:ReturnType<typeof setInterval>|null=null
 let toastTimer:ReturnType<typeof setTimeout>|null=null
@@ -133,12 +224,6 @@ function onProfileChange(){
     currentForm.value.videoBitrateKbps=3500
     currentForm.value.audioBitrateKbps=192
   }
-}
-function onResolutionChange(event:Event){
-  const value=(event.target as HTMLSelectElement).value
-  const [width,height]=value.split('x').map(Number)
-  currentForm.value.width=width||1280
-  currentForm.value.height=height||720
 }
 async function upload(file?:File){
   if(!file)return
@@ -246,7 +331,7 @@ onMounted(async()=>{
     if(authenticated.value){await refresh();startEvents()}}
   catch(error){showError(error)}finally{sessionLoading.value=false}
 })
-onUnmounted(()=>{stopEvents();if(toastTimer)clearTimeout(toastTimer);if(searchTimer)clearTimeout(searchTimer)})
+onUnmounted(()=>{closeStreamPreview();stopEvents();if(toastTimer)clearTimeout(toastTimer);if(searchTimer)clearTimeout(searchTimer)})
 </script>
 
 <template>
@@ -288,17 +373,23 @@ onUnmounted(()=>{stopEvents();if(toastTimer)clearTimeout(toastTimer);if(searchTi
               <div class="panel p-5"><div class="flex items-center justify-between"><p class="text-xs uppercase tracking-wider muted font-semibold">Health alerts</p><ShieldCheck :size="18" :class="errorCount?'text-rose-400':'text-indigo-300'"/></div><p class="text-3xl font-semibold mt-3">{{errorCount}}</p><p class="text-xs muted mt-1">Channels requiring attention</p></div>
             </div>
             <div v-if="!channels.length" class="panel p-12 text-center"><Clapperboard :size="38" class="mx-auto text-indigo-300 mb-4"/><h3 class="text-lg font-semibold">Your first channel starts here</h3><p class="muted text-sm max-w-md mx-auto mt-2">Upload a video, create a multicast channel, and start broadcasting to your IPTV network.</p><div class="flex gap-3 justify-center mt-6"><button class="btn" @click="activeTab='media'"><UploadCloud :size="16"/> Add video</button><button class="btn btn-primary" @click="newChannel"><Plus :size="16"/> New channel</button></div></div>
-            <div v-else class="grid grid-cols-1 xl:grid-cols-2 gap-5">
-              <article v-for="ch in channels" :key="ch.id" class="panel p-5 sm:p-6 min-w-0">
-                <div class="flex justify-between items-start gap-3"><div class="min-w-0"><p class="text-[11px] text-indigo-300 uppercase tracking-widest font-semibold mb-2">Service {{ch.serviceId}}</p><h3 class="text-lg font-semibold truncate">{{ch.name}}</h3><p class="text-xs muted mt-1 truncate">{{ch.description||ch.sourceLabel||ch.media?.name||'No description'}}</p></div><span class="pill shrink-0" :class="`pill-${ch.status}`"><span class="w-1.5 h-1.5 rounded-full bg-current"/>{{statusLabel(ch.status)}}</span></div>
-                <div class="mt-5 bg-[#090e1c] rounded-xl border border-[#25304a] px-4 py-3 flex flex-wrap items-center justify-between gap-3"><div><p class="text-[10px] muted tracking-wide uppercase mb-1">UDP Multicast</p><code class="text-indigo-200 text-sm">{{ch.groupIp}}:{{ch.port}}</code></div><p class="text-xs text-slate-400">{{profileNames[ch.profile]}}</p></div>
-                <div class="grid grid-cols-3 gap-3 mt-5 text-sm"><div><p class="muted text-xs mb-1">Playback</p><p class="font-medium">{{ch.progress.speed||'—'}}</p></div><div><p class="muted text-xs mb-1">Output rate</p><p class="font-medium">{{ch.progress.bitrate||'—'}}</p></div><div><p class="muted text-xs mb-1">Uptime</p><p class="font-medium">{{ch.status==='streaming'?fmtUptime(ch.startedAt):'—'}}</p></div></div>
-                <p v-if="ch.sourceType==='live' && ch.bufferState" class="mt-3 text-xs text-indigo-200">{{ch.bufferState==='filling'?'Buffering before broadcast':'Buffered live broadcast'}} · Cached window {{ch.bufferWindowSeconds?.toFixed(0)??'0'}}s · 20s startup target</p>
-                <p v-if="ch.lastError && ['error','recovering'].includes(ch.status)" class="mt-4 text-xs text-rose-300 break-words bg-rose-500/10 p-3 rounded-lg border border-rose-500/15">{{ch.lastError}}</p>
-                <div class="flex items-center gap-2 flex-wrap mt-5 pt-5 border-t rule"><button v-if="!['streaming','starting','stopping','recovering'].includes(ch.status)" class="btn btn-primary" :disabled="busyIds.includes(ch.id)" @click="action(ch,'start')"><Play :size="14"/> Start</button><button v-else class="btn" :disabled="busyIds.includes(ch.id)||ch.status==='stopping'" @click="action(ch,'stop')"><Square :size="13"/> Stop</button><button class="btn btn-icon" title="Restart" :disabled="busyIds.includes(ch.id)||ch.status==='stopping'" @click="action(ch,'restart')"><RotateCw :size="15"/></button><div class="flex-1"/><button class="btn btn-icon" title="Edit" :disabled="['streaming','starting','stopping','recovering'].includes(ch.status)" @click="editChannel(ch)"><Pencil :size="15"/></button><button class="btn btn-icon" title="Delete" :disabled="['streaming','starting','stopping','recovering'].includes(ch.status)" @click="removeChannel(ch)"><Trash2 :size="15"/></button></div>
-              </article>
-            </div>
-            <div class="flex items-start gap-3 text-xs muted bg-indigo-500/5 border border-indigo-400/15 rounded-xl p-4"><Info :size="16" class="shrink-0 text-indigo-300"/><p>Channels broadcast continuously whether receivers are connected or not. Video previews display the source file—not a verification of actual multicast reception. Playback starts at the current broadcast position for new viewers.</p></div>
+            <ul v-else role="list" class="overflow-hidden rounded-xl border border-white/10 bg-[#121a2e]/70 divide-y divide-white/5">
+              <li v-for="ch in channels" :key="ch.id" class="flex flex-wrap items-center justify-between gap-4 px-4 py-5 sm:px-6 hover:bg-white/[0.025]">
+                <div class="flex min-w-0 flex-1 items-center gap-4">
+                  <div class="size-12 shrink-0 rounded-xl bg-indigo-500/10 grid place-items-center"><Radio :size="21" class="text-indigo-300"/></div>
+                  <div class="min-w-0 flex-1"><p class="font-semibold text-sm truncate">{{ch.name}}</p><p class="mt-1 text-xs muted truncate">{{ch.description||ch.sourceLabel||ch.media?.name||'No description'}}</p><p class="mt-1 text-xs font-mono text-indigo-200">{{ch.groupIp}}:{{ch.port}} <span class="text-slate-500 font-sans">· Service {{ch.serviceId}}</span></p>
+                    <p v-if="ch.sourceType==='live' && ch.bufferState" class="mt-1 text-xs text-indigo-200">{{ch.bufferState==='filling'?'Buffering before broadcast':'Buffered live broadcast'}} · {{ch.bufferWindowSeconds?.toFixed(0)??'0'}}s cached</p>
+                    <p v-if="ch.lastError && ['error','recovering'].includes(ch.status)" class="mt-2 text-xs text-rose-300 break-words">{{ch.lastError}}</p>
+                  </div>
+                </div>
+                <div class="flex items-center gap-4 flex-wrap justify-end">
+                  <div class="hidden md:flex flex-col items-end gap-1"><span class="text-xs">{{profileNames[ch.profile]}}</span><span class="text-xs muted">{{ch.progress.speed||'—'}} · {{ch.progress.bitrate||'—'}} · {{ch.status==='streaming'?fmtUptime(ch.startedAt):'—'}}</span></div>
+                  <span class="pill" :class="`pill-${ch.status}`"><span class="size-1.5 rounded-full bg-current"/>{{statusLabel(ch.status)}}</span>
+                  <div class="flex items-center gap-1"><button v-if="!['streaming','starting','stopping','recovering'].includes(ch.status)" class="btn btn-primary" :disabled="busyIds.includes(ch.id)" @click="action(ch,'start')"><Play :size="14"/> Start</button><button v-else class="btn" :disabled="busyIds.includes(ch.id)||ch.status==='stopping'" @click="action(ch,'stop')"><Square :size="13"/> Stop</button><button class="btn btn-icon" title="Restart" :disabled="busyIds.includes(ch.id)||ch.status==='stopping'" @click="action(ch,'restart')"><RotateCw :size="15"/></button><button class="btn btn-icon" title="Edit" :disabled="['streaming','starting','stopping','recovering'].includes(ch.status)" @click="editChannel(ch)"><Pencil :size="15"/></button><button class="btn btn-icon" title="Delete" :disabled="['streaming','starting','stopping','recovering'].includes(ch.status)" @click="removeChannel(ch)"><Trash2 :size="15"/></button></div>
+                </div>
+              </li>
+            </ul>
+            <div class="flex items-start gap-3 text-xs muted bg-indigo-500/5 border border-indigo-400/15 rounded-xl p-4"><Info :size="16" class="shrink-0 text-indigo-300"/><p>Channels broadcast continuously whether receivers are connected or not. Source previews show the original file or internet feed—not a verification of actual multicast reception. Playback starts at the current broadcast position for new viewers.</p></div>
           </template>
           <template v-else-if="activeTab==='providers'">
             <div class="panel p-5 space-y-3">
@@ -316,15 +407,18 @@ onUnmounted(()=>{stopEvents();if(toastTimer)clearTimeout(toastTimer);if(searchTi
                 <form class="panel p-5 space-y-4" @submit.prevent="addProvider">
                   <h3 class="font-semibold">Add a provider</h3>
                   <div><label class="field-label">Provider name</label><input v-model="providerName" class="field" maxlength="100" placeholder="My live channels" required/></div>
-                  <div><label class="field-label">Catalog format</label><select v-model="providerKind" class="field"><option value="m3u">Extended M3U</option><option value="json">JSON channel catalog</option></select></div>
+                  <SearchCombobox :model-value="providerKind" :options="providerKindOptions" label="Catalog format" @update:model-value="value => { if(value==='m3u'||value==='json') providerKind=value }"/>
                   <div><label class="field-label">Catalog URL (HTTP / HTTPS)</label><input v-model="providerUrl" class="field" type="url" placeholder="https://example.org/playlist.m3u" required/></div>
                   <button class="btn btn-primary w-full" :disabled="providerSaving"><Plus :size="16"/> {{providerSaving?'Saving…':'Add provider'}}</button>
                 </form>
                 <div class="panel p-5 space-y-3"><h3 class="font-semibold">Configured providers</h3><p v-if="!providers.length" class="text-xs muted">No providers added yet.</p>
-                  <div v-for="provider in providers" :key="provider.id" class="rounded-lg border border-[#2d3a54] p-3 flex gap-2 items-center">
-                    <button class="flex-1 min-w-0 text-left" @click="browseProvider(provider.id)"><p class="font-medium text-sm truncate" :class="selectedProviderId===provider.id?'text-indigo-300':''">{{provider.name}}</p><p class="text-xs muted">{{provider.kind.toUpperCase()}}</p></button>
-                    <button class="btn btn-icon" title="Browse / refresh" @click="browseProvider(provider.id)"><RefreshCcw :size="15"/></button><button class="btn btn-icon" title="Remove provider" @click="removeProvider(provider)"><Trash2 :size="15"/></button>
-                  </div>
+                  <ul v-else role="list" class="divide-y divide-white/5 overflow-hidden rounded-xl border border-white/10 bg-gray-800/30">
+                    <li v-for="provider in providers" :key="provider.id" class="flex items-center gap-3 px-3 py-3 hover:bg-white/[0.025]" :class="selectedProviderId===provider.id?'bg-indigo-500/10':''">
+                      <div class="size-10 shrink-0 rounded-full bg-indigo-500/10 grid place-items-center"><Wifi :size="18" class="text-indigo-300"/></div>
+                      <button class="min-w-0 flex-1 text-left" @click="browseProvider(provider.id)"><p class="font-semibold text-sm truncate" :class="selectedProviderId===provider.id?'text-indigo-300':''">{{provider.name}}</p><p class="text-xs muted mt-1">{{provider.kind.toUpperCase()}} playlist</p></button>
+                      <button class="btn btn-icon" title="Browse playlist" @click="browseProvider(provider.id)"><ChevronRight :size="16"/></button><button class="btn btn-icon" title="Remove provider" @click="removeProvider(provider)"><Trash2 :size="15"/></button>
+                    </li>
+                  </ul>
                 </div>
               </div>
               <div class="panel p-5 min-h-[360px]">
@@ -332,17 +426,18 @@ onUnmounted(()=>{stopEvents();if(toastTimer)clearTimeout(toastTimer);if(searchTi
                   <div><h3 class="font-semibold">Available live channels</h3><p class="text-xs muted mt-1">{{providerLoading?'Loading playlist…':`${providerTotal.toLocaleString()} matching · ${catalogTotal.toLocaleString()} available`}}</p></div>
                   <div class="flex gap-2 items-center"><button class="btn btn-icon" title="Fetch latest playlist" :disabled="!selectedProviderId||providerLoading" @click="browseProvider(selectedProviderId,1,true)"><RefreshCcw :size="16"/></button><input v-model="channelSearch" class="field max-w-xs" placeholder="Search by name or group"/></div>
                 </div>
-                <div v-if="selectedProviderId" class="mb-4"><label class="field-label">Channel group</label><select v-model="providerGroup" class="field"><option value="">All groups</option><option v-for="group in providerGroups" :key="group" :value="group">{{group}}</option></select></div>
+                <div v-if="selectedProviderId" class="mb-4"><SearchCombobox :model-value="providerGroup" @update:model-value="value => providerGroup=String(value??'')" :options="groupOptions" label="Channel group" placeholder="Search channel groups…"/></div>
                 <div v-if="!selectedProviderId" class="muted text-sm p-8 text-center">Choose a configured playlist or add one above to discover channels.</div>
                 <div v-else-if="providerLoading" class="muted text-sm p-8 text-center">Fetching and indexing the live channel playlist over the office network…</div>
                 <div v-else-if="!providerChannels.length" class="muted text-sm p-8 text-center">No matching HTTP(S) live channels. Try another search or group.</div>
-                <div v-else class="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[650px] overflow-y-auto pr-1">
-                  <div v-for="entry in providerChannels" :key="entry.key" class="border border-[#2d3a54] rounded-xl p-3 flex items-center gap-3">
-                    <div class="h-10 w-10 shrink-0 rounded-lg bg-indigo-500/10 grid place-items-center"><Radio :size="19" class="text-indigo-300"/></div>
-                    <div class="min-w-0 flex-1"><p class="font-medium text-sm truncate" :title="entry.name">{{entry.name}}</p><p class="muted text-xs truncate">{{entry.group}}</p></div>
-                    <button class="btn btn-primary shrink-0" title="Add as multicast channel" @click="addProviderChannel(entry)"><Plus :size="15"/> Add</button>
-                  </div>
-                </div>
+                <ul v-else role="list" class="divide-y divide-white/5 overflow-y-auto max-h-[650px] rounded-xl border border-white/10 bg-gray-800/30">
+                  <li v-for="entry in providerChannels" :key="entry.key" class="flex items-center gap-3 px-3 sm:px-4 py-3 hover:bg-white/[0.025]">
+                    <img v-if="entry.logo" :src="entry.logo" :alt="`${entry.name} logo`" class="size-11 shrink-0 rounded-lg bg-gray-800 object-contain p-1" loading="lazy" referrerpolicy="no-referrer" @error="($event.target as HTMLImageElement).style.display='none'"/>
+                    <div v-else class="size-11 shrink-0 rounded-lg bg-indigo-500/10 grid place-items-center"><Radio :size="19" class="text-indigo-300"/></div>
+                    <div class="min-w-0 flex-1"><p class="font-semibold text-sm truncate" :title="entry.name">{{entry.name}}</p><p class="mt-1 text-xs muted truncate">{{entry.group}}</p></div>
+                    <div class="flex items-center gap-2 shrink-0"><button class="btn" title="Preview original live stream" @click="previewProviderChannel(entry)"><Play :size="15"/><span class="hidden sm:inline">Preview</span></button><button class="btn btn-primary" title="Add as multicast channel" @click="addProviderChannel(entry)"><Plus :size="15"/><span class="hidden sm:inline">Add</span></button></div>
+                  </li>
+                </ul>
                 <div v-if="selectedProviderId && providerPageCount>1 && !providerLoading" class="flex items-center justify-between gap-3 pt-4 mt-4 border-t rule">
                   <button class="btn" :disabled="providerPage<=1" @click="browseProvider(selectedProviderId,providerPage-1)">Previous</button>
                   <span class="text-xs muted">Page {{providerPage.toLocaleString()}} of {{providerPageCount.toLocaleString()}}</span>
@@ -356,9 +451,11 @@ onUnmounted(()=>{stopEvents();if(toastTimer)clearTimeout(toastTimer);if(searchTi
             <div><h2 class="text-2xl font-semibold tracking-tight">Video sources</h2><p class="text-sm muted mt-1">Upload videos or register existing files from the server's configured import directory.</p></div>
             <div class="grid grid-cols-1 xl:grid-cols-2 gap-5">
               <div class="panel p-6"><div class="flex gap-3 items-start"><div class="p-3 bg-indigo-500/15 rounded-xl text-indigo-300"><UploadCloud :size="22"/></div><div><h3 class="font-semibold">Upload video</h3><p class="text-xs muted mt-1">MP4, MKV, MOV, TS, MPEG, AVI and WebM. Files are analyzed by FFprobe.</p></div></div><label class="mt-5 border border-dashed border-[#455176] rounded-xl p-6 flex flex-col items-center gap-2 text-center cursor-pointer hover:bg-white/5 transition-colors"><UploadCloud :size="22" class="text-indigo-300"/><span class="text-sm font-semibold">{{uploading?`Uploading ${uploadPercent}%`:'Choose a video file'}}</span><span class="text-xs muted">Maximum size configured on the server</span><input class="hidden" type="file" accept="video/*,.ts,.mkv,.mpeg,.mpg" :disabled="uploading" @change="onFileSelected"/></label><div v-if="uploading" class="mt-4 h-2 bg-slate-800 rounded-full overflow-hidden"><div class="bg-indigo-400 h-full transition-all" :style="{width:`${uploadPercent}%`}"/></div></div>
-              <div class="panel p-6"><div class="flex gap-3 items-start"><div class="p-3 bg-indigo-500/15 rounded-xl text-indigo-300"><HardDrive :size="22"/></div><div><h3 class="font-semibold">Import from server</h3><p class="text-xs muted mt-1">Register a file already placed in the configured import folder, without copying it.</p></div></div><div class="mt-5 flex gap-2"><select v-model="importName" class="field flex-1"><option value="">Select video from import directory</option><option v-for="name in candidates" :key="name" :value="name">{{name}}</option></select><button class="btn" @click="refreshCandidates"><RefreshCcw :size="15"/></button></div><button class="btn btn-primary mt-3" :disabled="!importName" @click="importVideo"><Plus :size="15"/> Register file</button></div>
+              <div class="panel p-6"><div class="flex gap-3 items-start"><div class="p-3 bg-indigo-500/15 rounded-xl text-indigo-300"><HardDrive :size="22"/></div><div><h3 class="font-semibold">Import from server</h3><p class="text-xs muted mt-1">Register a file already placed in the configured import folder, without copying it.</p></div></div><div class="mt-5 flex gap-2"><div class="flex-1 min-w-0"><SearchCombobox :model-value="importName" @update:model-value="value => importName=String(value??'')" :options="importOptions" label="Import file" placeholder="Search server files…"/></div><button class="btn" @click="refreshCandidates"><RefreshCcw :size="15"/></button></div><button class="btn btn-primary mt-3" :disabled="!importName" @click="importVideo"><Plus :size="15"/> Register file</button></div>
             </div>
-            <div class="panel overflow-hidden"><div class="px-6 py-5 flex justify-between border-b rule"><h3 class="font-semibold">Library <span class="muted font-normal">({{media.length}} files)</span></h3><span class="text-xs muted">{{fmtBytes(media.reduce((a,b)=>a+b.bytes,0))}} total</span></div><div v-if="!media.length" class="p-12 text-center muted text-sm">No video files yet. Upload a file or import one from your Ubuntu server.</div><div v-else class="divide-y divide-[#252d44]"><div v-for="item in media" :key="item.id" class="flex flex-wrap sm:flex-nowrap items-center gap-4 px-5 py-4"><div class="bg-[#202943] rounded-xl p-4 shrink-0"><Film :size="22" class="text-indigo-300"/></div><div class="flex-1 min-w-0"><h4 class="font-medium text-sm truncate">{{item.name}}</h4><p class="text-xs muted mt-1">{{fmtDuration(item.duration)}} <span class="px-1">·</span> {{item.width||'?'}}×{{item.height||'?'}} <span class="px-1">·</span> {{item.videoCodec||'?'}} / {{item.audioCodec||'no audio'}} <span class="px-1">·</span> {{fmtBytes(item.bytes)}}</p><p class="text-[11px] text-indigo-300 mt-1 uppercase">{{item.origin==='import'?'Registered file':'Uploaded file'}}</p></div><div class="flex gap-2"><button class="btn btn-icon" title="Preview source" @click="previewMedia=item"><Play :size="15"/></button><button class="btn btn-icon" title="Remove file" @click="removeMedia(item)"><Trash2 :size="15"/></button></div></div></div></div>
+            <div class="panel overflow-hidden"><div class="px-6 py-5 flex justify-between border-b rule"><h3 class="font-semibold">Library <span class="muted font-normal">({{media.length}} files)</span></h3><span class="text-xs muted">{{fmtBytes(media.reduce((a,b)=>a+b.bytes,0))}} total</span></div><div v-if="!media.length" class="p-12 text-center muted text-sm">No video files yet. Upload a file or import one from your Ubuntu server.</div>
+              <ul v-else role="list" class="divide-y divide-white/5 bg-gray-800/20"><li v-for="item in media" :key="item.id" class="flex items-center gap-4 px-5 py-4 hover:bg-white/[0.025]"><div class="size-12 rounded-full bg-indigo-500/10 grid place-items-center shrink-0"><Film :size="22" class="text-indigo-300"/></div><div class="min-w-0 flex-1"><h4 class="font-semibold text-sm truncate">{{item.name}}</h4><p class="text-xs muted mt-1">{{fmtDuration(item.duration)}} · {{item.width||'?'}}×{{item.height||'?'}} · {{item.videoCodec||'?'}} / {{item.audioCodec||'no audio'}} · {{fmtBytes(item.bytes)}}</p><p class="text-[11px] text-indigo-300 mt-1 uppercase">{{item.origin==='import'?'Registered file':'Uploaded file'}}</p></div><div class="flex gap-2 shrink-0"><button class="btn btn-icon" title="Preview source" @click="previewMedia=item"><Play :size="15"/></button><button class="btn btn-icon" title="Remove file" @click="removeMedia(item)"><Trash2 :size="15"/></button></div></li></ul>
+            </div>
           </template>
           <template v-else-if="activeTab==='system'">
             <div><h2 class="text-2xl font-semibold tracking-tight">System & network</h2><p class="text-sm muted mt-1">Read-only runtime configuration. Edit config/streamer.json and restart the service to change NIC assignments.</p></div>
@@ -377,19 +474,24 @@ onUnmounted(()=>{stopEvents();if(toastTimer)clearTimeout(toastTimer);if(searchTi
     </template>
     <div v-if="toast" class="fixed bottom-6 right-6 left-6 sm:left-auto z-50 max-w-[540px] rounded-xl border shadow-2xl px-5 py-4 flex gap-3 items-start bg-[#1b253c]" :class="toast.kind==='error'?'border-rose-500/50':'border-indigo-400/40'"><component :is="toast.kind==='error'?CircleAlert:Check" :size="18" :class="toast.kind==='error'?'text-rose-300':'text-emerald-300'"/><p class="text-sm flex-1 whitespace-pre-line break-words">{{toast.message}}</p><button @click="toast=null"><X :size="16"/></button></div>
     <div v-if="modalOpen" class="modal-shade" @click.self="modalOpen=false"><div class="modal-card"><div class="sticky top-0 bg-[#121a2e] border-b border-[#303b56] z-10 px-6 py-5 flex items-center justify-between"><div><h3 class="font-semibold text-lg">{{editingId?'Edit channel':'Create multicast channel'}}</h3><p class="text-xs muted mt-1">Choose a source, output profile, and multicast destination.</p></div><button class="btn btn-icon" @click="modalOpen=false"><X :size="17"/></button></div><form @submit.prevent="saveChannel" class="p-6 space-y-6">
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4"><div><label class="field-label">Channel name</label><input v-model="currentForm.name" class="field" placeholder="Resort information" maxlength="100" required/></div><div><label class="field-label">Source type</label><select v-model="currentForm.sourceType" class="field" @change="switchSourceType"><option value="media">Local video (loop)</option><option value="live">Live internet stream</option></select></div>
-        <div v-if="currentForm.sourceType==='media'"><label class="field-label">Source video</label><select v-model="currentForm.mediaId" class="field" required><option :value="null" disabled>Select a video</option><option v-for="item in media" :key="item.id" :value="item.id">{{item.name}}</option></select></div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4"><div><label class="field-label">Channel name</label><input v-model="currentForm.name" class="field" placeholder="Resort information" maxlength="100" required/></div><SearchCombobox :model-value="currentForm.sourceType" :options="sourceTypeOptions" label="Source type" @update:model-value="setSourceType"/>
+        <div v-if="currentForm.sourceType==='media'"><SearchCombobox :model-value="currentForm.mediaId" @update:model-value="value => currentForm.mediaId=typeof value==='string'?value:null" :options="mediaOptions" label="Source video" placeholder="Search uploaded videos…"/></div>
         <div v-else class="sm:col-span-2 space-y-2"><label class="field-label">Live input</label>
           <p v-if="currentForm.providerId" class="text-xs text-indigo-300">Selected provider channel. The server will resolve a fresh URL whenever the broadcast restarts.</p>
-          <input v-else v-model="currentForm.streamUrl" type="url" class="field" placeholder="https://example.org/live/index.m3u8" required/>
+          <div v-else class="flex gap-2 items-center"><input v-model="currentForm.streamUrl" type="url" class="field" placeholder="https://example.org/live/index.m3u8" required/><button type="button" class="btn" title="Preview this URL in the browser" @click="previewDirectStream"><Play :size="15"/> Preview</button></div>
           <button v-if="currentForm.providerId" type="button" class="btn" @click="currentForm.providerId=null;currentForm.providerChannelKey=null">Switch to direct URL</button>
           <p class="text-xs muted">Internet input uses the office NIC. Live channels prebuffer at least 20 seconds on disk before multicasting through the IPTV NIC.</p>
         </div><div class="sm:col-span-2"><label class="field-label">Description (optional)</label><input v-model="currentForm.description" class="field" maxlength="300" placeholder="Continuous resort information channel"/></div></div>
       <div><p class="text-sm font-semibold mb-3 flex gap-2 items-center"><Network :size="16" class="text-indigo-300"/> Multicast destination</p><div class="grid grid-cols-2 sm:grid-cols-4 gap-3"><div class="col-span-2"><label class="field-label">Group IP</label><input v-model="currentForm.groupIp" class="field font-mono" required/></div><div><label class="field-label">UDP port</label><input v-model.number="currentForm.port" class="field" type="number" min="1024" max="65535" required/></div><div><label class="field-label">TTL</label><input v-model.number="currentForm.ttl" class="field" type="number" min="1" max="255" required/></div></div><p class="text-xs muted mt-2">Allowed range: {{system?.streaming.range||'Configured on server'}}. Interface: {{system?.streaming.interface||'—'}}</p></div>
-      <div><p class="text-sm font-semibold mb-3 flex gap-2 items-center"><Clapperboard :size="16" class="text-indigo-300"/> Encoding</p><div class="grid grid-cols-1 sm:grid-cols-2 gap-4"><div class="sm:col-span-2"><label class="field-label">Encoding profile</label><select v-model="currentForm.profile" class="field" @change="onProfileChange"><option v-for="(label,key) in profileNames" :key="key" :value="key">{{label}}</option></select><p v-if="currentForm.profile==='copy'" class="text-xs text-amber-300 mt-2">Direct copy requires the original codecs to be supported by the MPEG-TS muxer and every receiver.</p><p v-if="currentForm.profile==='mpeg2'" class="text-xs text-amber-300 mt-2">For a 2-vCPU VM, start with SD PAL (720 × 576), 25 fps, 3500 kbps video and 192 kbps audio. Keep playback speed near 1.00x. MPEG-2 HD live transcoding may overload the VM.</p></div><template v-if="currentForm.profile!=='copy'"><div><label class="field-label">Resolution</label><select class="field" :value="`${currentForm.width}x${currentForm.height}`" @change="onResolutionChange"><option value="720x576">720 × 576 (SD PAL)</option><option value="1280x720">1280 × 720 (HD)</option><option value="1920x1080">1920 × 1080 (FHD)</option></select></div><div><label class="field-label">Frame rate</label><select v-model.number="currentForm.fps" class="field"><option :value="25">25 fps</option><option :value="30">30 fps</option><option :value="50">50 fps</option><option :value="60">60 fps</option></select></div><div><label class="field-label">Video bitrate (kbps)</label><input v-model.number="currentForm.videoBitrateKbps" class="field" type="number" min="250" max="40000" required/></div><div><label class="field-label">Audio bitrate (kbps)</label><input v-model.number="currentForm.audioBitrateKbps" class="field" type="number" min="32" max="512" required/></div></template><div><label class="field-label">MPEG-TS Service ID</label><input v-model.number="currentForm.serviceId" class="field" type="number" min="1" max="65535" required/></div></div></div>
+      <div><p class="text-sm font-semibold mb-3 flex gap-2 items-center"><Clapperboard :size="16" class="text-indigo-300"/> Encoding</p><div class="grid grid-cols-1 sm:grid-cols-2 gap-4"><div class="sm:col-span-2"><SearchCombobox :model-value="currentForm.profile" :options="profileOptions" label="Encoding profile" @update:model-value="setProfile"/><p v-if="currentForm.profile==='copy'" class="text-xs text-amber-300 mt-2">Direct copy requires the original codecs to be supported by the MPEG-TS muxer and every receiver.</p><p v-if="currentForm.profile==='mpeg2'" class="text-xs text-amber-300 mt-2">For a 2-vCPU VM, start with SD PAL (720 × 576), 25 fps, 3500 kbps video and 192 kbps audio. Keep playback speed near 1.00x. MPEG-2 HD live transcoding may overload the VM.</p></div><template v-if="currentForm.profile!=='copy'"><div><SearchCombobox :model-value="resolution" @update:model-value="value => resolution=String(value??'')" :options="resolutionOptions" label="Resolution"/></div><div><SearchCombobox :model-value="currentForm.fps" @update:model-value="value => currentForm.fps=Number(value)" :options="frameRateOptions" label="Frame rate"/></div><div><label class="field-label">Video bitrate (kbps)</label><input v-model.number="currentForm.videoBitrateKbps" class="field" type="number" min="250" max="40000" required/></div><div><label class="field-label">Audio bitrate (kbps)</label><input v-model.number="currentForm.audioBitrateKbps" class="field" type="number" min="32" max="512" required/></div></template><div><label class="field-label">MPEG-TS Service ID</label><input v-model.number="currentForm.serviceId" class="field" type="number" min="1" max="65535" required/></div></div></div>
       <div class="flex flex-wrap gap-6"><label class="inline-flex items-center gap-2 text-sm cursor-pointer"><input v-model="currentForm.autoStart" type="checkbox" class="accent-indigo-500 w-4 h-4"/> Auto-start on boot</label><label class="inline-flex items-center gap-2 text-sm cursor-pointer"><input v-model="currentForm.autoRecover" type="checkbox" class="accent-indigo-500 w-4 h-4"/> Auto-recover crashes</label></div>
       <div class="flex justify-end gap-3 border-t rule pt-5"><button class="btn" type="button" @click="modalOpen=false">Cancel</button><button class="btn btn-primary" :disabled="saving"><Check :size="16"/>{{saving?'Saving…':editingId?'Save changes':'Create channel'}}</button></div>
     </form></div></div>
+    <div v-if="previewStream" class="modal-shade" @click.self="closeStreamPreview"><div class="modal-card">
+      <div class="p-5 flex items-start justify-between gap-4 border-b rule"><div class="min-w-0"><h3 class="font-semibold truncate">{{previewStream.name}}</h3><p class="text-xs muted mt-1 truncate">{{previewStream.group}} · Browser source preview</p></div><button class="btn btn-icon" title="Close preview" @click="closeStreamPreview"><X :size="17"/></button></div>
+      <div class="bg-black relative"><video ref="previewVideo" class="w-full max-h-[65vh] min-h-48 bg-black" controls playsinline preload="none" @error="previewError = previewError || 'Your browser cannot play this source.'"/><div v-if="previewLoading" class="absolute inset-0 grid place-items-center text-sm text-indigo-200 bg-black/60">Preparing live preview…</div></div>
+      <div class="p-5 space-y-2"><p v-if="previewError" class="text-sm text-amber-300">{{previewError}}</p><p class="text-xs muted">Preview plays the original internet feed in your browser, not the buffered multicast output. Some channels cannot be previewed due to CORS, custom headers, unsupported codecs or unavailable sources. You can still add them to Multicast Studio.</p></div>
+    </div></div>
     <div v-if="previewMedia" class="modal-shade" @click.self="previewMedia=null"><div class="modal-card"><div class="p-5 flex justify-between items-center"><h3 class="font-semibold truncate">{{previewMedia.name}}</h3><button class="btn btn-icon" @click="previewMedia=null"><X :size="17"/></button></div><video :key="previewMedia.id" class="bg-black w-full max-h-[60vh]" :src="`/api/media/${previewMedia.id}/preview`" controls preload="metadata"/><p class="p-5 text-xs muted">Source-file preview only. Your browser may not decode some legacy codecs; VLC or your IPTV receiver can still support them.</p></div></div>
   </div>
 </template>

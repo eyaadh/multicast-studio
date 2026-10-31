@@ -325,3 +325,21 @@ The rolling playlist retains **24 segments**, nominally about 48 seconds with 2-
 The dashboard shows **Buffering before broadcast** until the startup buffer is ready and then **Buffered live broadcast** with the cached playlist window. The cached window is not a measurement of guaranteed remaining playback time. Local-file looping channels still use their original direct FFmpeg pipeline.
 
 **Important:** This introduces approximately 20+ seconds of delay and can smooth short download variations; it does not guarantee uninterrupted multicast during prolonged upstream outages, stalled encoding, expiring source tokens, or playlist discontinuities. The broadcaster may still stall when cached segments run out. Automatic recovery restarts both processes and refills the buffer before transmitting again. A continuously broadcast fallback/test card is **not** included in this patch. For a diagnostic baseline, use **Direct Copy** to avoid expensive transcoding on a 2-vCPU VM; older MPEG-2-only receivers still require a compatible output profile.
+
+
+### Searchable selectors and live preview
+
+The dashboard uses searchable Headless UI comboboxes for catalog format, provider group,
+local video/import selection, source type, encoding profile, resolution, and frame rate.
+Channel, provider, and media lists use compact, accessible row layouts.
+
+Use **Live Providers → Preview** to check a catalog stream before adding it as a
+multicast channel, or **Preview** beside a direct live URL in the channel editor.
+The browser plays the original source (not the multicast output), using native HLS
+when available or hls.js. Browser playback depends on CORS, supported codecs,
+access restrictions, and upstream availability. Streams that require custom HTTP
+headers are not browser-previewable; they can still be configured for FFmpeg.
+No server-side preview transcoding or media proxy is started.
+
+After applying the UI patch, run `npm install` once to install `@headlessui/vue`
+and `hls.js` and update `package-lock.json`, then run `npm run build`.
