@@ -18,5 +18,7 @@ export type SystemInfo = {
 }
 export type RouteCheck = {ok:boolean;dev:string|null;source:string;message:string}
 
-export type CricfyStatus = {connected:boolean;release:string|null;installedAt:string|null}
-export type CricfyDirectoryItem = {key:string;name:string;image:string|null}
+export type ProviderChannelsResponse = {
+  data:ProviderChannel[];groups:string[];catalogTotal:number;
+  pagination:{page:number;limit:number;total:number;totalPages:number}
+}

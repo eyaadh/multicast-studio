@@ -14,8 +14,7 @@ import { config, managementIP, streamingIP, mediaDirectory } from './config.js'
 import { checkRoute, assertMulticast, listInterfaces } from './network.js'
 import { getMedia, listMedia, mediaPublic, mediaInUse, deleteMedia, saveChannel, getChannel, listChannels, deleteChannel,
   listProviders, getProvider, createProvider, removeProvider, providerInUse } from './db.js'
-import { validateHttpUrl, getProviderChannels, publicChannel } from './providers.js'
-import { cricfyStatus, connectOfficialRelease, importAddonArchive, discoverCricfyProviders } from './cricfy.js'
+import { validateHttpUrl, getProviderChannels, pageProviderChannels, invalidateProviderCache } from './providers.js'
 import { startChannel, stopChannel, restartChannel, startAutostartChannels, snapshots, snapshot, running, forgetChannel, shutdown } from './supervisor.js'
 import { cleanName, importCandidates, registerImport, uploadVideo } from './media.js'
 import { isAuthenticated, verifyCredentials, makeSession, logout, loginAllowed, loginFailed, clearFailures } from './auth.js'
@@ -93,40 +92,6 @@ const validateChannel = (input: unknown) => {
   }
   return parsed.data satisfies ChannelValues
 }
-app.get('/api/cricfy/status',async c=>c.json(await cricfyStatus()))
-app.post('/api/cricfy/connect',async c=>{
-  try{return c.json(await connectOfficialRelease())}
-  catch(e){return c.json({error:e instanceof Error?e.message:String(e)},502)}
-})
-app.post('/api/cricfy/addon',async c=>{
-  try{
-    const declared=Number(c.req.header('content-length')||0)
-    if(declared>20_000_000)return c.json({error:'Archive is larger than 20 MB'},413)
-    const data=new Uint8Array(await c.req.arrayBuffer())
-    if(data.byteLength>20_000_000)return c.json({error:'Archive is larger than 20 MB'},413)
-    return c.json(await importAddonArchive(data))
-  }catch(e){return c.json({error:e instanceof Error?e.message:String(e)},400)}
-})
-app.get('/api/cricfy/directory',async c=>{
-  try{return c.json((await discoverCricfyProviders()).map(({key,name,image})=>({key,name,image})))}
-  catch(e){return c.json({error:e instanceof Error?e.message:String(e)},502)}
-})
-app.post('/api/cricfy/import',async c=>{
-  const body=z.object({keys:z.array(z.string().length(32)).min(1).max(100)}).safeParse(await c.req.json().catch(()=>null))
-  if(!body.success)return c.json({error:'Choose at least one Cricfy provider'},400)
-  try{
-    const directory=await discoverCricfyProviders()
-    const existing=listProviders()
-    const added=[]
-    for(const key of new Set(body.data.keys)){
-      const chosen=directory.find(entry=>entry.key===key)
-      if(!chosen)continue
-      if(existing.some(p=>p.kind==='cricfy'&&p.url===chosen.url))continue
-      added.push(createProvider(chosen.name,'cricfy',chosen.url))
-    }
-    return c.json({added,count:added.length})
-  }catch(e){return c.json({error:e instanceof Error?e.message:String(e)},502)}
-})
 const providerSchema=z.object({name:z.string().trim().min(1).max(100),kind:z.enum(['m3u','json']),url:z.string().max(4096)})
 app.get('/api/providers',c=>c.json(listProviders()))
 app.post('/api/providers',async c=>{
@@ -142,13 +107,20 @@ app.delete('/api/providers/:id',c=>{
   if(!getProvider(id))return c.json({error:'Provider not found'},404)
   if(providerInUse(id))return c.json({error:'Provider is used by a multicast channel'},409)
   removeProvider(id)
+  invalidateProviderCache(id)
   return c.json({ok:true})
 })
 app.get('/api/providers/:id/channels',async c=>{
   const provider=getProvider(c.req.param('id'))
   if(!provider)return c.json({error:'Provider not found'},404)
-  try{return c.json((await getProviderChannels(provider)).map(publicChannel))}
-  catch(e){return c.json({error:e instanceof Error?e.message:String(e)},502)}
+  const page=Math.max(1,Number.parseInt(c.req.query('page')||'1',10)||1)
+  const limit=Math.min(100,Math.max(1,Number.parseInt(c.req.query('limit')||'50',10)||50))
+  const search=(c.req.query('search')||'').trim().toLowerCase().slice(0,200)
+  const group=(c.req.query('group')||'').trim().slice(0,80)
+  try{
+    const all=await getProviderChannels(provider,c.req.query('refresh')==='true')
+    return c.json(pageProviderChannels(all,{page,limit,search,group}))
+  }catch(e){return c.json({error:e instanceof Error?e.message:String(e)},502)}
 })
 app.get('/api/channels',c=>c.json(snapshots()))
 app.post('/api/channels',async c=>{

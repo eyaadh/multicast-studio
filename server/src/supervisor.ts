@@ -101,7 +101,7 @@ export async function startChannel(id: string, recovering = false): Promise<Chan
     // Resolve the provider on EVERY launch, not just when the channel is created.
     // Signed/rotated URLs are therefore refreshed after a source interruption.
     let source
-    if(channel.sourceType==='live')source=await resolveLiveSource(channel)
+    if(channel.sourceType==='live')source=await resolveLiveSource(channel,recovering)
     else {
       if(!channel.mediaId)throw new Error('No local video is configured')
       source=getMedia(channel.mediaId)
@@ -132,10 +132,18 @@ export async function startChannel(id: string, recovering = false): Promise<Chan
         if(end===-1)break
         const block=buffered.slice(0,end+1)
         buffered=buffered.slice(end+1)
-        s.progress=parseProgressBlock(block)
-        s.lastProgressAt=Date.now()
-        if(s.status==='starting'||s.status==='recovering')s.status='streaming'
-        if(Date.now()-new Date(s.startedAt||0).getTime()>120000)s.failures=0
+        const next=parseProgressBlock(block)
+        const advanced=(next.outTime && next.outTime!==s.progress.outTime) ||
+          (next.totalSize!==undefined && next.totalSize>(s.progress.totalSize??-1)) ||
+          (next.frame!==undefined && next.frame>(s.progress.frame??-1))
+        s.progress=next
+        // FFmpeg can report progress=continue indefinitely while an HLS input is stalled.
+        // Only advancing output counts as a healthy broadcast.
+        if(advanced){
+          s.lastProgressAt=Date.now()
+          if(s.status==='starting'||s.status==='recovering')s.status='streaming'
+          if(Date.now()-new Date(s.startedAt||0).getTime()>120000)s.failures=0
+        }
       }
     })
     child.stderr.on('data',(chunk:Buffer)=>{s.stderr=(s.stderr+chunk.toString('utf8')).slice(-2400)})

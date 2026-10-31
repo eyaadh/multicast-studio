@@ -217,12 +217,12 @@ npm run build
 
 Playlist playout, source normalization, truly seamless loop continuity, configurable TS CBR/PIDs, receiver-side health probes, audit logs and multi-user accounts are **not** included in this initial version.
 
-## Live internet channels and provider catalogs (v1.1)
+## Live internet channels and M3U playlists (v1.2)
 
 The **Live Providers** screen adds discoverable channels from ordinary, authorized **Extended M3U** or **JSON** catalogs. The server fetches catalog data from the management (office) network, then FFmpeg reads the chosen live HTTP(S) source and transmits MPEG-TS over the separately configured IPTV interface. The original local video loop mode is unchanged.
 
-1. Open **Live Providers** and add the HTTP(S) URL of an authorized provider playlist.
-2. Select the provider, browse or search the available channels, and select **Add**.
+1. Open **Live Providers** and use **Add Hilay TV** or **Add IPTV-org (Global)**, or add any other accessible HTTP(S) extended-M3U playlist.
+2. Select a playlist, browse by group, search channel names and paginate through results, and select **Add**.
 3. Select the legacy MPEG-4, MPEG-2, H.264, or copy output profile for your receiving hardware.
 4. Start the multicast channel and test with `udp://@239.80.0.1:5000` in VLC.
 
@@ -244,7 +244,7 @@ A JSON provider must be an array of `{id, name, url, group?, icon?}` entries:
 ]
 ```
 
-Provider-backed channel records save a **provider ID and channel key**, not a potentially expiring URL. On every start/restart/retry the application fetches the provider playlist again, re-identifies the entry, and checks that the selected upstream's route uses the office NIC. The live FFmpeg process is monitored for exit or stalled progress. With **Auto-recover** enabled, live feeds retry indefinitely with exponential backoff capped at one minute (local video channels keep their original retry policy). When upstream transmission stops there will usually be a broadcast interruption while the source is reacquired; seamless standby/failover is **not implemented** in this release.
+Provider-backed channel records save a **provider ID and channel key**, not a potentially expiring URL. On start/restart/retry the application resolves the channel from a cached provider directory (refreshed at most every 3 minutes, or at least 30 seconds apart on forced recovery), and checks that the selected upstream's route uses the office NIC. The live FFmpeg process is monitored for exit or stalled progress. With **Auto-recover** enabled, live feeds retry indefinitely with exponential backoff capped at one minute (local video channels keep their original retry policy). When upstream transmission stops there will usually be a broadcast interruption while the source is reacquired; seamless standby/failover is **not implemented** in this release.
 
 ### Network separation
 
@@ -254,7 +254,13 @@ Provider-backed channel records save a **provider ID and channel key**, not a po
 
 The input HTTP client disallows URLs resolving to private, loopback, link-local and multicast IPv4 ranges. IPv6-only upstreams and intranet-based streaming servers are not supported by this initial implementation. Only HTTP(S) stream sources are supported; DRM, credential harvesting, encrypted provider metadata, and proprietary Kodi playback plugins are **not** integrated.
 
-**About the referenced Cricfy Kodi add-on:** It uses remotely configured and encrypted provider metadata. This patch implements the same **provider → channel → stream** workflow for unencrypted catalogs that you supply, but it does **not** automatically fetch or decrypt Cricfy's private provider directory. It does not include or redistribute Cricfy's source code or stream listings.
+### Large playlists and channel support
+
+- M3U catalogs are downloaded with support for gzip/deflate/Brotli compression, with a **60 MB uncompressed limit** and a **100,000-entry** supported HTTP(S)-channel cap. Search and filtering are performed by the API; only **50 channels per page** are sent to the dashboard.
+- Playlist data is cached in memory for **3 minutes**. Use the refresh button next to the channel search to fetch a new copy. Streams are not added automatically; you choose which become multicast channels.
+- Some entries in public indexes are offline, geo-restricted, DRM-protected, or use protocols that the importer does not support; their presence in a catalog is **not a guarantee of playback or redistribution permission**. The importer only lists HTTP(S) stream inputs. Do not use feeds for which you lack access or rebroadcast rights.
+- On upstream EOF, FFmpeg exit, or prolonged lack of advancing output, the supervisor tries again with backoff. **There may be black video during reconnection; no continuous fallback test card is implemented.**
+- Old Cricfy providers already stored in SQLite remain visible as legacy entries; you can remove them once they are not assigned to any channel. The Cricfy connector and UI have been removed. Existing local-media channels and normal M3U/JSON channel definitions are preserved.
 
 ### Deployment and database migration
 
@@ -270,18 +276,3 @@ sudo journalctl -u multicast-studio -f
 ```
 
 If you use a different systemd service name or run the server manually, adjust those commands accordingly. Check CPU utilization when transcoding internet streams to legacy MPEG-4; direct copy should only be used if the receiver supports the input codecs.
-
-## Cricfy Kodi provider discovery (optional)
-
-This integration is an **opt-in** connector using the released Kodi add-on's provider discovery protocol. It does not require installing Kodi or Python. Existing local-video loops, generic M3U/JSON providers, and your office/IPTV network isolation are unchanged.
-
-1. Install `unzip` on Ubuntu: `sudo apt install unzip`.
-2. Sign in to Multicast Studio and open **Live Providers → Cricfy Kodi — Provider discovery**.
-3. Click **Connect official Kodi release**. This retrieves the newest **built** add-on ZIP from the official GitHub repository; the GitHub *source* ZIP cannot be used because generated add-on properties are absent. Alternatively, download the built Kodi ZIP from [official Releases](https://github.com/itsyourap/cricfy-kodi-plugin/releases) and import it using **Import built add-on ZIP**.
-4. Click **Discover providers** to load the directory from Cricfy's configured upstream endpoints.
-5. Choose the provider groups you want, select **Import selected providers**, and then browse the channels as with any other configured provider.
-6. Click **Add** next to a supported channel. It becomes a normal live-source multicast channel with auto-reconnect and refreshed upstream URL resolution. Existing local video channels are unaffected.
-
-**No list of Cricfy streams is present in the source repository**, and the connector can only discover the live directory if Cricfy's own remote services and published release configuration continue to work. Live provider channels can disappear or change. DRM-protected entries are not eligible for FFmpeg multicast output.
-
-The connector's HTTP calls are bound to the **management/office NIC** and require public IPv4 DNS routes through that NIC; MPEG-TS multicast is still transmitted through the configured VOD/IPTV NIC. Do not configure two competing default routes. The official build may contain authentication/configuration material: keep `data/cricfy-addon-config.json` private; do not commit it to Git or expose it through your reverse proxy. See `THIRD_PARTY_NOTICES.md` for upstream license details.

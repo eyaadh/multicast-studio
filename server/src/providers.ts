@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
+import { createGunzip, createInflate, createBrotliDecompress } from 'node:zlib'
 import { isIP } from 'node:net'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -11,8 +12,8 @@ import { getProvider } from './db.js'
 
 const execFileAsync = promisify(execFile)
 export type Provider = {id:string;name:string;kind:'m3u'|'json'|'cricfy';url:string;createdAt:string}
-export type ProviderChannel = {key:string;name:string;group:string;logo:string|null;url:string;userAgent?:string;referer?:string;cookie?:string;headers?:Record<string,string>}
-export type PublicProviderChannel = Omit<ProviderChannel,'url'|'userAgent'|'referer'>
+export type ProviderChannel = {key:string;legacyKey?:string;name:string;group:string;logo:string|null;url:string;userAgent?:string;referer?:string;cookie?:string;headers?:Record<string,string>}
+export type PublicProviderChannel = Pick<ProviderChannel,'key'|'name'|'group'|'logo'>
 
 export function validateHttpUrl(text: string): URL {
   let url: URL
@@ -49,28 +50,51 @@ export async function verifyOfficeInput(text:string): Promise<{url:URL;ip:string
   return {url,ip}
 }
 
-export async function fetchCatalogText(text:string, hops=0, extraHeaders:Record<string,string>={}):Promise<string> {
-  if(hops>3)throw new Error('Too many catalog redirects')
+/** Larger IPTV indexes can be tens of megabytes; enforce a decompressed limit. */
+export const MAX_CATALOG_BYTES = 60 * 1024 * 1024
+const CATALOG_CACHE_MS = 3 * 60 * 1000
+const catalogCache = new Map<string,{expires:number;channels:ProviderChannel[]}>()
+const catalogPending = new Map<string,Promise<ProviderChannel[]>>()
+
+export async function fetchCatalogText(text:string, hops=0):Promise<string> {
+  if(hops>4)throw new Error('Too many catalog redirects')
   const {url,ip}=await verifyOfficeInput(text)
   return new Promise<string>((resolve,reject)=>{
     const fn=url.protocol==='https:'?httpsRequest:httpRequest
     const req=fn(url,{method:'GET',localAddress:managementIP,
       lookup:(_hostname,_opts,cb)=>cb(null,ip,4),
-      headers:{'user-agent':'MulticastStudio/1.1','accept':'application/json, application/x-mpegurl, text/plain, */*',...extraHeaders},
-      timeout:10000},res=>{
+      headers:{'user-agent':'MulticastStudio/1.2','accept':'application/x-mpegurl, audio/x-mpegurl, application/octet-stream, text/plain, application/json, */*',
+        'accept-encoding':'gzip, deflate, br'},timeout:45000},res=>{
       const status=res.statusCode??0
       if([301,302,303,307,308].includes(status)&&res.headers.location){
         res.resume()
-        fetchCatalogText(new URL(res.headers.location,url).href,hops+1,extraHeaders).then(resolve,reject)
+        fetchCatalogText(new URL(res.headers.location,url).href,hops+1).then(resolve,reject)
         return
       }
-      if(status!==200){res.resume();reject(new Error(`Provider returned HTTP ${status}`));return}
+      if(status!==200){res.resume();reject(new Error(`Playlist returned HTTP ${status}`));return}
+      const encoding=String(res.headers['content-encoding']||'').trim().toLowerCase()
+      const decoded=encoding==='gzip'?res.pipe(createGunzip()) :
+        encoding==='deflate'?res.pipe(createInflate()) :
+        encoding==='br'?res.pipe(createBrotliDecompress()) :res
+      if(encoding && !['gzip','deflate','br','identity'].includes(encoding)){
+        res.resume();reject(new Error(`Unsupported playlist compression: ${encoding}`));return
+      }
       let size=0;const chunks:Buffer[]=[]
-      res.on('data',(chunk:Buffer)=>{size+=chunk.length;if(size>2_000_000){req.destroy(new Error('Catalog exceeds 2MB'))}else chunks.push(chunk)})
-      res.on('end',()=>resolve(Buffer.concat(chunks).toString('utf8')))
-      res.on('error',reject)
+      let settled=false
+      const fail=(error:Error)=>{
+        if(settled)return
+        settled=true;req.destroy();decoded.destroy();reject(error)
+      }
+      res.on('error',fail)
+      decoded.on('error',fail)
+      decoded.on('data',(chunk:Buffer)=>{
+        size+=chunk.length
+        if(size>MAX_CATALOG_BYTES){fail(new Error('Playlist exceeds 60 MB decompressed size limit'));return}
+        chunks.push(chunk)
+      })
+      decoded.on('end',()=>{if(!settled){settled=true;resolve(Buffer.concat(chunks).toString('utf8'))}})
     })
-    req.on('timeout',()=>req.destroy(new Error('Catalog request timed out')))
+    req.on('timeout',()=>req.destroy(new Error('Playlist request timed out')))
     req.on('error',reject)
     req.end()
   })
@@ -82,12 +106,13 @@ function channelKey(id:string,index:number,name:string,group:string):string {
 }
 export function parseM3u(text:string, baseUrl:string): ProviderChannel[] {
   const lines=text.replace(/^\uFEFF/,'').split(/\r?\n/)
-  if(!lines[0]?.trim().startsWith('#EXTM3U'))throw new Error('This provider did not return a valid extended M3U playlist')
+  if(!lines[0]?.trim().startsWith('#EXTM3U'))throw new Error('This URL did not return an extended M3U channel list')
   if(lines.some(line=>line.startsWith('#EXT-X-')))throw new Error('This is an HLS manifest, not a provider catalog. Add it as a direct live channel instead.')
   const entries:ProviderChannel[]=[]
+  const seen=new Set<string>()
   const duplicateNames=new Map<string,number>()
-  let attrs:Record<string,string>={},name='',agent='',referer='',cookie='',extras:Record<string,string>={},drm=false
-  const reset=()=>{attrs={};name='';agent='';referer='';cookie='';extras={};drm=false}
+  let attrs:Record<string,string>={},name='',groupHint='',agent='',referer='',cookie='',extras:Record<string,string>={},drm=false
+  const reset=()=>{attrs={};name='';groupHint='';agent='';referer='';cookie='';extras={};drm=false}
   const headerValue=(value:string)=>value.replace(/[\r\n\0]/g,'').slice(0,1000)
   for(const line of lines.slice(1)){
     const value=line.trim()
@@ -97,7 +122,8 @@ export function parseM3u(text:string, baseUrl:string): ProviderChannel[] {
       drm=pendingDrm
       for(const [,key,v] of value.matchAll(/([\w-]+)=(?:"([^"]*)"|([^,\s]+))/g))attrs[key!]=v||''
       name=cleanText(value.slice(value.lastIndexOf(',')+1))||cleanText(attrs['tvg-name']||'')
-    } else if(value.startsWith('#EXTVLCOPT:http-user-agent='))agent=headerValue(value.slice('#EXTVLCOPT:http-user-agent='.length))
+    } else if(value.startsWith('#EXTGRP:'))groupHint=cleanText(value.slice('#EXTGRP:'.length),80)
+    else if(value.startsWith('#EXTVLCOPT:http-user-agent='))agent=headerValue(value.slice('#EXTVLCOPT:http-user-agent='.length))
     else if(value.startsWith('#EXTVLCOPT:http-referrer='))referer=headerValue(value.slice('#EXTVLCOPT:http-referrer='.length))
     else if(value.startsWith('#EXTHTTP:')){
       try {
@@ -115,7 +141,7 @@ export function parseM3u(text:string, baseUrl:string): ProviderChannel[] {
     } else if(value.startsWith('#KODIPROP:inputstream.adaptive.license_key=') ||
       value.startsWith('#KODIPROP:inputstream.adaptive.drm') || value.startsWith('#EXT-X-KEY:'))drm=true
     else if(value && !value.startsWith('#')){
-      if(name && !drm && entries.length<3000){
+      if(name && !drm && entries.length<100000){
         try{
           const divider=value.indexOf('|')
           const rawUrl=divider===-1?value:value.slice(0,divider)
@@ -130,14 +156,23 @@ export function parseM3u(text:string, baseUrl:string): ProviderChannel[] {
               else if(/^[a-z0-9-]{1,40}$/i.test(key))extras[key]=val
             }
           }
-          const group=cleanText(attrs['group-title']||'General',80)
-          const identity=`${group.toLowerCase()}\0${name.toLowerCase()}`
-          const duplicate=duplicateNames.get(identity)||0
-          duplicateNames.set(identity,duplicate+1)
-          entries.push({key:channelKey(attrs['tvg-id']||'',duplicate,name,group),name,group,
-            logo:attrs['tvg-logo']?.slice(0,500)||null,url,
-            ...(agent?{userAgent:agent}:{}),...(referer?{referer}: {}),
-            ...(cookie?{cookie}:{}),...(Object.keys(extras).length?{headers:extras}:{})})
+          const group=cleanText(attrs['group-title']||groupHint||'General',80)
+          // Use the station, group and URL origin/path (not transient query tokens).
+          // This remains stable as playlists are reordered or signed URLs rotate.
+          const parsed=new URL(url)
+          const identity=`${group.toLowerCase()}\0${name.toLowerCase()}\0${parsed.origin}${parsed.pathname}`
+          const key=stableKey(identity)
+          const legacyIdentity=`${group.toLowerCase()}\0${name.toLowerCase()}`
+          const legacyIndex=duplicateNames.get(legacyIdentity)||0
+          duplicateNames.set(legacyIdentity,legacyIndex+1)
+          const legacyKey=channelKey(attrs['tvg-id']||'',legacyIndex,name,group)
+          if(!seen.has(key)){
+            seen.add(key)
+            entries.push({key,legacyKey,name,group,
+              logo:attrs['tvg-logo']?.slice(0,500)||null,url,
+              ...(agent?{userAgent:agent}:{}),...(referer?{referer}: {}),
+              ...(cookie?{cookie}:{}),...(Object.keys(extras).length?{headers:extras}:{})})
+          }
         }catch{/* Ignore unsupported/malformed playlist entries */}
       }
       reset()
@@ -161,39 +196,50 @@ export function parseJsonCatalog(text:string,baseUrl:string):ProviderChannel[]{
     }catch{return []}
   })
 }
-export async function getProviderChannels(provider:Provider):Promise<ProviderChannel[]> {
-  if(provider.kind==='cricfy') {
-    const {loadCricfyChannels,discoverCricfyProviders}=await import('./cricfy.js')
-    let playlistUrl=provider.url
-    try {
-      // Cricfy rotates provider catalog URLs as well as individual stream URLs.
-      // Prefer an exact URL match, falling back to provider title when the link changes.
-      const latest=await discoverCricfyProviders()
-      const current=latest.find(entry=>entry.url===provider.url) ||
-        latest.find(entry=>entry.name.toLowerCase()===provider.name.toLowerCase())
-      if(current)playlistUrl=current.url
-    }catch(error){
-      console.warn('[cricfy] Provider directory refresh failed; attempting saved playlist URL:',
-        error instanceof Error?error.message:error)
-    }
-    return loadCricfyChannels(playlistUrl)
-  }
-  const text=await fetchCatalogText(provider.url)
-  return provider.kind==='json'?parseJsonCatalog(text,provider.url):parseM3u(text,provider.url)
+/** Cached catalogs protect the Ubuntu VM and upstreams from repeated huge downloads. */
+export async function getProviderChannels(provider:Provider,forceRefresh=false):Promise<ProviderChannel[]> {
+  if(provider.kind==='cricfy')throw new Error('Cricfy discovery has been retired. Add an M3U playlist instead.')
+  const cached=catalogCache.get(provider.id)
+  if(cached && Date.now()<cached.expires && (!forceRefresh || Date.now()<cached.expires-CATALOG_CACHE_MS+30000))return cached.channels
+  const inflight=catalogPending.get(provider.id)
+  if(inflight)return inflight
+  const pending=(async()=>{
+    const text=await fetchCatalogText(provider.url)
+    const channels=provider.kind==='json'?parseJsonCatalog(text,provider.url):parseM3u(text,provider.url)
+    catalogCache.set(provider.id,{expires:Date.now()+CATALOG_CACHE_MS,channels})
+    return channels
+  })()
+  catalogPending.set(provider.id,pending)
+  try{return await pending}finally{catalogPending.delete(provider.id)}
 }
-export async function resolveLiveSource(source:{providerId:string|null;providerChannelKey:string|null;streamUrl:string|null}):Promise<ProviderChannel> {
+export function invalidateProviderCache(id:string):void {catalogCache.delete(id)}
+export async function resolveLiveSource(source:{providerId:string|null;providerChannelKey:string|null;streamUrl:string|null},forceRefresh=false):Promise<ProviderChannel> {
   if(source.providerId && source.providerChannelKey){
     const provider=getProvider(source.providerId)
     if(!provider)throw new Error('Live provider no longer exists')
-    const channels=await getProviderChannels(provider)
-    const matched=channels.find(c=>c.key===source.providerChannelKey)
-    if(!matched)throw new Error('Channel is no longer present in the provider catalog')
+    const channels=await getProviderChannels(provider,forceRefresh)
+    const matched=channels.find(c=>c.key===source.providerChannelKey || c.legacyKey===source.providerChannelKey)
+    if(!matched)throw new Error('Channel is no longer present in the playlist; refresh its provider')
     await verifyOfficeInput(matched.url)
     return matched
   }
   if(!source.streamUrl)throw new Error('Live channel has no input source')
   await verifyOfficeInput(source.streamUrl)
   return {key:'direct',name:'Direct live stream',group:'',logo:null,url:source.streamUrl}
+}
+export function pageProviderChannels(
+  all:ProviderChannel[],options:{page:number;limit:number;search:string;group:string}
+):{data:PublicProviderChannel[];groups:string[];pagination:{page:number;limit:number;total:number;totalPages:number};catalogTotal:number} {
+  const page=Math.max(1,Math.trunc(options.page)||1)
+  const limit=Math.min(100,Math.max(1,Math.trunc(options.limit)||50))
+  const search=options.search.trim().toLowerCase().slice(0,200)
+  const group=options.group.trim()
+  const groups=[...new Set(all.map(ch=>ch.group))].sort((a,b)=>a.localeCompare(b))
+  const filtered=all.filter(ch=>(!group||ch.group===group) &&
+    (!search||`${ch.name} ${ch.group}`.toLowerCase().includes(search)))
+  return {data:filtered.slice((page-1)*limit,page*limit).map(publicChannel),groups,
+    pagination:{page,limit,total:filtered.length,totalPages:Math.ceil(filtered.length/limit)},
+    catalogTotal:all.length}
 }
 export function publicChannel(ch:ProviderChannel):PublicProviderChannel {
   return {key:ch.key,name:ch.name,group:ch.group,logo:ch.logo}
