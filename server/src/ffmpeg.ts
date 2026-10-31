@@ -3,6 +3,8 @@ import { promisify } from 'node:util'
 import type { Channel, Media, Progress } from './types.js'
 import type { ProviderChannel } from './providers.js'
 import { config, streamingIP } from './config.js'
+import { join } from 'node:path'
+import { LIVE_SEGMENT_SECONDS, LIVE_WINDOW_SEGMENTS, LIVE_DELETE_THRESHOLD } from './liveBuffer.js'
 
 const execFileAsync = promisify(execFile)
 export async function probeVideo(path: string) {
@@ -19,19 +21,11 @@ export async function probeVideo(path: string) {
     width: video.width || null, height:video.height || null
   }
 }
-export function ffmpegArguments(ch: Channel, source: Media | ProviderChannel): string[] {
+export function ffmpegArguments(ch: Channel, source: Media | ProviderChannel, bufferedPlaylist?: string): string[] {
   const isLive = ch.sourceType === 'live'
-  const inputArgs = isLive
-    ? ['-protocol_whitelist','http,https,tcp,tls,crypto,data',
-      '-rw_timeout','15000000',
-      ...('userAgent' in source && source.userAgent ? ['-user_agent',source.userAgent] : []),
-      ...('referer' in source && source.referer ? ['-referer',source.referer] : []),
-      ...('cookie' in source && source.cookie || 'headers' in source && source.headers && Object.keys(source.headers).length ?
-        ['-headers',[...('cookie' in source && source.cookie ? [`Cookie: ${source.cookie}\r\n`] : []),
-          ...('headers' in source && source.headers ? Object.entries(source.headers)
-            .filter(([key])=>/^[a-z0-9-]{1,40}$/i.test(key))
-            .map(([key,value])=>`${key}: ${value.replace(/[\r\n]/g,'')}\r\n`) : [])].join('')] : []),
-      '-i',(source as ProviderChannel).url]
+  const inputArgs = bufferedPlaylist
+    ? ['-re','-live_start_index','-10','-i',bufferedPlaylist]
+    : isLive ? ffmpegLiveInput(source as ProviderChannel)
     : ['-re','-stream_loop','-1','-i',(source as Media).storedPath]
   const base = ['-hide_banner','-nostdin','-loglevel','warning','-stats_period','2',
     // Limit video filter parallelism when converting a live feed on a small VM.
@@ -69,6 +63,33 @@ export function parseProgressBlock(block: string): Progress {
     totalSize:safeNumber(raw.total_size),updatedAt:new Date().toISOString()
   }
 }
-export function launchFFmpeg(ch: Channel, source: Media | ProviderChannel) {
-  return spawn(config.tools.ffmpeg, ffmpegArguments(ch, source), {stdio:['ignore','pipe','pipe'] as const})
+/** Download/remux internet video to a bounded rolling HLS directory; no encoding here. */
+export function liveIngestArguments(source: ProviderChannel, directory: string): string[] {
+  const input = ffmpegLiveInput(source)
+  return ['-hide_banner','-nostdin','-loglevel','warning','-stats_period','2',
+    '-progress','pipe:1',...input,'-map','0:v:0','-map','0:a:0?','-sn','-dn',
+    '-c','copy','-f','hls','-hls_segment_type','mpegts',
+    '-hls_time',String(LIVE_SEGMENT_SECONDS),
+    '-hls_list_size',String(LIVE_WINDOW_SEGMENTS),
+    '-hls_delete_threshold',String(LIVE_DELETE_THRESHOLD),
+    '-hls_flags','delete_segments+temp_file+omit_endlist',
+    '-hls_segment_filename',join(directory,'segment_%08d.ts'),
+    join(directory,'index.m3u8')]
+}
+function ffmpegLiveInput(source: ProviderChannel): string[] {
+  return ['-protocol_whitelist','http,https,tcp,tls,crypto,data',
+    '-rw_timeout','15000000',
+    ...(source.userAgent ? ['-user_agent',source.userAgent] : []),
+    ...(source.referer ? ['-referer',source.referer] : []),
+    ...(source.cookie || source.headers && Object.keys(source.headers).length ?
+      ['-headers',[...(source.cookie ? [`Cookie: ${source.cookie}\r\n`] : []),
+        ...Object.entries(source.headers || {}).filter(([key])=>/^[a-z0-9-]{1,40}$/i.test(key))
+          .map(([key,value])=>`${key}: ${value.replace(/[\r\n]/g,'')}\r\n`)].join('')] : []),
+    '-i',source.url]
+}
+export function launchLiveIngest(source: ProviderChannel, directory: string) {
+  return spawn(config.tools.ffmpeg,liveIngestArguments(source,directory),{stdio:['ignore','pipe','pipe'] as const})
+}
+export function launchFFmpeg(ch: Channel, source: Media | ProviderChannel, bufferedPlaylist?: string) {
+  return spawn(config.tools.ffmpeg, ffmpegArguments(ch, source, bufferedPlaylist), {stdio:['ignore','pipe','pipe'] as const})
 }

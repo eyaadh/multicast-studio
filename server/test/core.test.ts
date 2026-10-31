@@ -85,3 +85,33 @@ test('live MPEG-2 uses bounded encoding threads and SD-compatible settings',()=>
   assert.equal(args[args.indexOf('-c:v')+1],'mpeg2video')
   assert.equal(args[args.indexOf('-b:v')+1],'3500k')
 })
+
+test('buffered live output reads disk playlist with real-time pacing, without HTTP request headers',()=>{
+  const live={...channel,sourceType:'live' as const,mediaId:null,profile:'copy' as const}
+  const source={key:'one',name:'Live',group:'',logo:null,url:'https://example.org/live.m3u8',
+    userAgent:'CustomUserAgent',referer:'https://example.org'}
+  const args=ffmpegArguments(live,source,'/tmp/buffer/index.m3u8')
+  assert.equal(args[args.indexOf('-i')+1],'/tmp/buffer/index.m3u8')
+  assert.equal(args.includes('-re'),true)
+  assert.equal(args.includes('-live_start_index'),true)
+  assert.equal(args.includes('-user_agent'),false)
+  assert.equal(args.includes('-referer'),false)
+  assert.equal(args.includes('-rw_timeout'),false)
+  assert.equal(args[args.indexOf('-c')+1],'copy')
+})
+test('live downloader copies codecs into bounded HLS segments before multicast',async()=>{
+  const {liveIngestArguments}=await import('../src/ffmpeg.ts')
+  const args=liveIngestArguments({key:'a',name:'TV',group:'',logo:null,url:'https://example.org/a.m3u8'},'/tmp/buffer')
+  assert.equal(args[args.indexOf('-c')+1],'copy')
+  assert.equal(args[args.indexOf('-hls_time')+1],'2')
+  assert.equal(args[args.indexOf('-hls_list_size')+1],'24')
+  assert.equal(args.includes('-vf'),false)
+  assert.equal(args.includes('udp://'),false)
+  assert.equal(args[args.indexOf('-i')+1],'https://example.org/a.m3u8')
+})
+test('buffer readiness counts completed segments, not just the manifest target duration',async()=>{
+  const {parseBufferedSeconds,liveBufferDirectory}=await import('../src/liveBuffer.ts')
+  assert.equal(parseBufferedSeconds('#EXTM3U\n#EXT-X-TARGETDURATION:6\n'),0)
+  assert.equal(parseBufferedSeconds('#EXTM3U\n#EXTINF:5.5,\nsegment0.ts\n#EXTINF:6.0,\nsegment1.ts\n'),11.5)
+  assert.throws(()=>liveBufferDirectory('../../escape'))
+})

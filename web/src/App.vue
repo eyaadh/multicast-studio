@@ -86,7 +86,7 @@ function newChannel(){
   editingId.value=null
   const next=defaultForm()
   next.mediaId=media.value[0]?.id||null
-  if(!next.mediaId)next.sourceType='live'
+  if(!next.mediaId){next.sourceType='live';next.profile='copy'}
   const address=system.value?.streaming.range.split('/')[0]||'239.80.0.0'
   const prefix=address.split('.').slice(0,3).join('.')
   let index=1
@@ -221,6 +221,7 @@ async function removeProvider(provider:Provider){
 function addProviderChannel(ch:ProviderChannel){
   newChannel()
   currentForm.value.sourceType='live'
+  currentForm.value.profile='copy'
   currentForm.value.mediaId=null
   currentForm.value.providerId=selectedProviderId.value
   currentForm.value.providerChannelKey=ch.key
@@ -232,6 +233,7 @@ function addProviderChannel(ch:ProviderChannel){
 function switchSourceType(){
   currentForm.value.providerId=null;currentForm.value.providerChannelKey=null;currentForm.value.streamUrl=null
   currentForm.value.mediaId=currentForm.value.sourceType==='media'?media.value[0]?.id||null:null
+  if(currentForm.value.sourceType==='live')currentForm.value.profile='copy'
 }
 watch(activeTab,tab=>{if(tab==='media' && authenticated.value)void refreshCandidates()})
 watch([channelSearch,providerGroup],()=>{
@@ -291,6 +293,7 @@ onUnmounted(()=>{stopEvents();if(toastTimer)clearTimeout(toastTimer);if(searchTi
                 <div class="flex justify-between items-start gap-3"><div class="min-w-0"><p class="text-[11px] text-indigo-300 uppercase tracking-widest font-semibold mb-2">Service {{ch.serviceId}}</p><h3 class="text-lg font-semibold truncate">{{ch.name}}</h3><p class="text-xs muted mt-1 truncate">{{ch.description||ch.sourceLabel||ch.media?.name||'No description'}}</p></div><span class="pill shrink-0" :class="`pill-${ch.status}`"><span class="w-1.5 h-1.5 rounded-full bg-current"/>{{statusLabel(ch.status)}}</span></div>
                 <div class="mt-5 bg-[#090e1c] rounded-xl border border-[#25304a] px-4 py-3 flex flex-wrap items-center justify-between gap-3"><div><p class="text-[10px] muted tracking-wide uppercase mb-1">UDP Multicast</p><code class="text-indigo-200 text-sm">{{ch.groupIp}}:{{ch.port}}</code></div><p class="text-xs text-slate-400">{{profileNames[ch.profile]}}</p></div>
                 <div class="grid grid-cols-3 gap-3 mt-5 text-sm"><div><p class="muted text-xs mb-1">Playback</p><p class="font-medium">{{ch.progress.speed||'—'}}</p></div><div><p class="muted text-xs mb-1">Output rate</p><p class="font-medium">{{ch.progress.bitrate||'—'}}</p></div><div><p class="muted text-xs mb-1">Uptime</p><p class="font-medium">{{ch.status==='streaming'?fmtUptime(ch.startedAt):'—'}}</p></div></div>
+                <p v-if="ch.sourceType==='live' && ch.bufferState" class="mt-3 text-xs text-indigo-200">{{ch.bufferState==='filling'?'Buffering before broadcast':'Buffered live broadcast'}} · Cached window {{ch.bufferWindowSeconds?.toFixed(0)??'0'}}s · 20s startup target</p>
                 <p v-if="ch.lastError && ['error','recovering'].includes(ch.status)" class="mt-4 text-xs text-rose-300 break-words bg-rose-500/10 p-3 rounded-lg border border-rose-500/15">{{ch.lastError}}</p>
                 <div class="flex items-center gap-2 flex-wrap mt-5 pt-5 border-t rule"><button v-if="!['streaming','starting','stopping','recovering'].includes(ch.status)" class="btn btn-primary" :disabled="busyIds.includes(ch.id)" @click="action(ch,'start')"><Play :size="14"/> Start</button><button v-else class="btn" :disabled="busyIds.includes(ch.id)||ch.status==='stopping'" @click="action(ch,'stop')"><Square :size="13"/> Stop</button><button class="btn btn-icon" title="Restart" :disabled="busyIds.includes(ch.id)||ch.status==='stopping'" @click="action(ch,'restart')"><RotateCw :size="15"/></button><div class="flex-1"/><button class="btn btn-icon" title="Edit" :disabled="['streaming','starting','stopping','recovering'].includes(ch.status)" @click="editChannel(ch)"><Pencil :size="15"/></button><button class="btn btn-icon" title="Delete" :disabled="['streaming','starting','stopping','recovering'].includes(ch.status)" @click="removeChannel(ch)"><Trash2 :size="15"/></button></div>
               </article>
@@ -380,7 +383,7 @@ onUnmounted(()=>{stopEvents();if(toastTimer)clearTimeout(toastTimer);if(searchTi
           <p v-if="currentForm.providerId" class="text-xs text-indigo-300">Selected provider channel. The server will resolve a fresh URL whenever the broadcast restarts.</p>
           <input v-else v-model="currentForm.streamUrl" type="url" class="field" placeholder="https://example.org/live/index.m3u8" required/>
           <button v-if="currentForm.providerId" type="button" class="btn" @click="currentForm.providerId=null;currentForm.providerChannelKey=null">Switch to direct URL</button>
-          <p class="text-xs muted">Internet input uses the office NIC. Multicast output remains on the IPTV NIC.</p>
+          <p class="text-xs muted">Internet input uses the office NIC. Live channels prebuffer at least 20 seconds on disk before multicasting through the IPTV NIC.</p>
         </div><div class="sm:col-span-2"><label class="field-label">Description (optional)</label><input v-model="currentForm.description" class="field" maxlength="300" placeholder="Continuous resort information channel"/></div></div>
       <div><p class="text-sm font-semibold mb-3 flex gap-2 items-center"><Network :size="16" class="text-indigo-300"/> Multicast destination</p><div class="grid grid-cols-2 sm:grid-cols-4 gap-3"><div class="col-span-2"><label class="field-label">Group IP</label><input v-model="currentForm.groupIp" class="field font-mono" required/></div><div><label class="field-label">UDP port</label><input v-model.number="currentForm.port" class="field" type="number" min="1024" max="65535" required/></div><div><label class="field-label">TTL</label><input v-model.number="currentForm.ttl" class="field" type="number" min="1" max="255" required/></div></div><p class="text-xs muted mt-2">Allowed range: {{system?.streaming.range||'Configured on server'}}. Interface: {{system?.streaming.interface||'—'}}</p></div>
       <div><p class="text-sm font-semibold mb-3 flex gap-2 items-center"><Clapperboard :size="16" class="text-indigo-300"/> Encoding</p><div class="grid grid-cols-1 sm:grid-cols-2 gap-4"><div class="sm:col-span-2"><label class="field-label">Encoding profile</label><select v-model="currentForm.profile" class="field" @change="onProfileChange"><option v-for="(label,key) in profileNames" :key="key" :value="key">{{label}}</option></select><p v-if="currentForm.profile==='copy'" class="text-xs text-amber-300 mt-2">Direct copy requires the original codecs to be supported by the MPEG-TS muxer and every receiver.</p><p v-if="currentForm.profile==='mpeg2'" class="text-xs text-amber-300 mt-2">For a 2-vCPU VM, start with SD PAL (720 × 576), 25 fps, 3500 kbps video and 192 kbps audio. Keep playback speed near 1.00x. MPEG-2 HD live transcoding may overload the VM.</p></div><template v-if="currentForm.profile!=='copy'"><div><label class="field-label">Resolution</label><select class="field" :value="`${currentForm.width}x${currentForm.height}`" @change="onResolutionChange"><option value="720x576">720 × 576 (SD PAL)</option><option value="1280x720">1280 × 720 (HD)</option><option value="1920x1080">1920 × 1080 (FHD)</option></select></div><div><label class="field-label">Frame rate</label><select v-model.number="currentForm.fps" class="field"><option :value="25">25 fps</option><option :value="30">30 fps</option><option :value="50">50 fps</option><option :value="60">60 fps</option></select></div><div><label class="field-label">Video bitrate (kbps)</label><input v-model.number="currentForm.videoBitrateKbps" class="field" type="number" min="250" max="40000" required/></div><div><label class="field-label">Audio bitrate (kbps)</label><input v-model.number="currentForm.audioBitrateKbps" class="field" type="number" min="32" max="512" required/></div></template><div><label class="field-label">MPEG-TS Service ID</label><input v-model.number="currentForm.serviceId" class="field" type="number" min="1" max="65535" required/></div></div></div>

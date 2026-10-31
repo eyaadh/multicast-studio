@@ -10,7 +10,7 @@ export type ChannelForm = {name:string;description:string;sourceType:SourceType;
  autoStart:boolean;autoRecover:boolean;serviceId:number}
 export type Channel = ChannelForm & {id:string;media:Media|null;sourceLabel:string|null;status:Status;pid:number|null;
  startedAt:string|null;progress:{frame?:number;fps?:number;bitrate?:string;speed?:string;outTime?:string;updatedAt?:string};
- restarts:number;lastError:string|null;createdAt:string;updatedAt:string}
+ restarts:number;lastError:string|null;bufferState:'filling'|'broadcasting'|null;bufferWindowSeconds:number|null;createdAt:string;updatedAt:string}
 export type SystemInfo = {
  management:{interface:string;address:string;port:number};streaming:{interface:string;address:string;range:string;ttl:number;verifyEgressRoute:boolean};
  interfaces:Array<{name:string;address:string;internal:boolean}>;channels:number;streamingCount:number;

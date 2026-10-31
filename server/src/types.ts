@@ -22,4 +22,5 @@ export type Progress = {
 export type ChannelSnapshot = Channel & {
   media: PublicMedia | null; sourceLabel: string | null; status: ChannelStatus; pid: number | null; startedAt: string | null;
   progress: Progress; restarts: number; lastError: string | null;
+  bufferState: 'filling' | 'broadcasting' | null; bufferWindowSeconds: number | null;
 }

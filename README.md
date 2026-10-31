@@ -153,7 +153,7 @@ sudo tcpdump -ni ens18 'udp and dst host 239.80.0.1 and dst port 5000'
 - FFmpeg `-progress` is used for live status; this confirms output progress, **not actual packet reception**. Use VLC/STB and packet capture for end-to-end validation.
 - MPEG-TS timestamp handling **at loop boundaries** varies by codec/container and receiver. This first release provides indefinite looping, **not a guarantee of seamless broadcast-grade transitions**; test a complete loop cycle on your oldest STB before production. A gapless playout/normalization pipeline can be a subsequent enhancement.
 - Routes and encoding profiles may need adjustment to specific set-top boxes. Some equipment requires constant bitrate MPEG-TS, PCR timing, particular audio settings or SD-only video. This initial release does not implement explicit CBR transport stream padding or custom PID configuration.
-- This app streams video files, not encrypted content, DRM, or RTSP/HLS/VOD.
+- The app supports looping local video files and unencrypted HTTP(S) live inputs (including HLS); it does not decrypt DRM or provide a VOD server.
 - Source preview works for formats supported by your browser; VLC may play files your browser cannot.
 
 ## 7. Storage and security
@@ -312,3 +312,16 @@ speed stays near `1.00x`, inspect the receiver's codec constraints, multicast
 packet-loss/IGMP forwarding, and whether it requires constant-bitrate transport
 streaming or different PCR/PID settings. Those requirements are not inferred by this
 patch.
+
+### Buffered live IPTV broadcasting (default)
+
+Live internet channels now use a **two-stage disk-backed pipeline**:
+
+1. An FFmpeg downloader reads the upstream HLS/HTTP source using the existing office-network routing checks. It remuxes the source without transcoding into rolling, completed MPEG-TS segments under `data/live-buffer/<channel-uuid>/`.
+2. Once at least **20 seconds** of completed segments are present, a separate FFmpeg broadcaster reads the local HLS playlist at real-time pace, applies the selected channel profile (Direct Copy, MPEG-2, MPEG-4, H.264), and sends MPEG-TS multicast through the configured IPTV NIC.
+
+The rolling playlist retains **24 segments**, nominally about 48 seconds with 2-second GOPs. Actual retention varies with upstream keyframe spacing and segment lengths. FFmpeg deletes expired segments, and the app removes a channel's buffer when it stops or restarts. A 5 Mbps source uses roughly 30 MB for 48 seconds of buffered media (plus overhead). Allocate sufficient storage for concurrently active channels. Buffer files are not exposed over HTTP.
+
+The dashboard shows **Buffering before broadcast** until the startup buffer is ready and then **Buffered live broadcast** with the cached playlist window. The cached window is not a measurement of guaranteed remaining playback time. Local-file looping channels still use their original direct FFmpeg pipeline.
+
+**Important:** This introduces approximately 20+ seconds of delay and can smooth short download variations; it does not guarantee uninterrupted multicast during prolonged upstream outages, stalled encoding, expiring source tokens, or playlist discontinuities. The broadcaster may still stall when cached segments run out. Automatic recovery restarts both processes and refills the buffer before transmitting again. A continuously broadcast fallback/test card is **not** included in this patch. For a diagnostic baseline, use **Direct Copy** to avoid expensive transcoding on a 2-vCPU VM; older MPEG-2-only receivers still require a compatible output profile.
