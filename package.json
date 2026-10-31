@@ -11,8 +11,8 @@
     "typecheck": "vue-tsc --noEmit -p web/tsconfig.json && tsc --noEmit -p server/tsconfig.json",
     "start": "node server/dist/index.js",
     "test": "node --import tsx --test server/test/*.test.ts",
-    "format": "prettier --write \"**/*.{js,jsx,ts,tsx,json,css,scss,html,md}\"",
-    "format:check": "prettier --check \"**/*.{js,jsx,ts,tsx,json,css,scss,html,md}\""
+    "format": "prettier --write \"**/*.{js,jsx,ts,tsx,json,vue,css,scss,html,md}\"",
+    "format:check": "prettier --check \"**/*.{js,jsx,ts,tsx,json,vue,css,scss,html,md}\""
   },
   "dependencies": {
     "@headlessui/vue": "^1.7.23",

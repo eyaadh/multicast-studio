@@ -63,18 +63,18 @@ The HTTP server binds **only** to the selected management NIC IPv4 address. FFmp
 
 ## 2. Configure your two networks
 
-Your environment uses these subnets:
+The following is an **example network setup**. Replace all addresses, gateways, VLANs, and interface names with values appropriate to your deployment:
 
-| Purpose           | VLAN subnet       | Gateway        | DNS         | Example server IP | Example NIC |
-| ----------------- | ----------------- | -------------- | ----------- | ----------------- | ----------- |
-| Office/management | `10.50.0.0/24`    | `10.50.0.2`    | `10.50.0.3` | `10.50.0.50`      | `ens18`     |
-| IPTV/VOD          | `192.168.80.0/24` | `192.168.80.2` | optional    | `192.168.80.50`   | `ens19`     |
+| Purpose                      | VLAN subnet       | Gateway        | DNS         | Example server IP | Example NIC |
+| ---------------------------- | ----------------- | -------------- | ----------- | ----------------- | ----------- |
+| Management / internet access | `10.50.0.0/24`    | `10.50.0.2`    | `10.50.0.3` | `10.50.0.50`      | `ens18`     |
+| IPTV/VOD                     | `192.168.80.0/24` | `192.168.80.2` | optional    | `192.168.80.50`   | `ens19`     |
 
-**Example IPs and interface names are placeholders, not known assigned addresses.**
+**All IP addresses, VLANs, gateways, and interface names above are illustrative placeholders—not assigned production values.**
 
 Recommended routing for a directly connected IPTV VLAN:
 
-- **Default route** through office NIC / `10.50.0.2`.
+- **Default route** through management NIC / `10.50.0.2`.
 - VOD NIC has `192.168.80.x/24`, **without a second default route**.
 - A **specific multicast route** for `239.80.0.0/16` through the VOD NIC, with link scope.
 - Gateway `192.168.80.2` remains the VOD router address; it does not need to be configured as a default route on this VM. If the network must route multicast across VLANs, your network team must configure the router/IGMP/PIM and the TTL to suit that topology. Merely adding a unicast gateway does not make multicast routing work.
@@ -89,7 +89,7 @@ ip -4 route
 ip -j route get 239.80.0.1 from 192.168.80.50
 ```
 
-The `ip route get` output should show your **IPTV NIC**, not the office NIC. If it does not, the app will refuse to start the channel.
+The `ip route get` output should show your **IPTV NIC**, not the management NIC. If it does not, the app will refuse to start the channel.
 
 Make sure your VM uses the correct VLAN-backed bridge/vNIC and that switches have suitable IGMP snooping and an IGMP querier. Use PIM or an appropriate multicast router for receivers in other VLANs. Set TTL greater than 1 **only** when needed for routed multicast.
 
@@ -101,7 +101,7 @@ npm run build
 npm start
 ```
 
-Open `http://<your-office-interface-ip>:3000` from the office VLAN and sign in with your `.env` credentials.
+Open `http://<your-management-interface-ip>:3000` from the management network and sign in with your `.env` credentials.
 
 > In production, HTTPS is recommended to protect the admin password and session cookie. Use a trusted reverse proxy if exposing beyond a controlled management segment; keep access restricted to your management VLAN. With HTTPS, set `COOKIE_SECURE=true` and restart the service. This is designed for a trusted, private network—not direct public Internet exposure.
 
@@ -149,7 +149,7 @@ sudo tcpdump -ni ens19 'udp and dst host 239.80.0.1 and dst port 5000'
 sudo tcpdump -ni ens18 'udp and dst host 239.80.0.1 and dst port 5000'
 ```
 
-`tcpdump` may require `sudo apt install tcpdump`. The first capture should see packets; the office interface should **not**. `ip -j route get ... from ...` is checked prior to every channel start as a guardrail, but packet capture verifies the real path.
+`tcpdump` may require `sudo apt install tcpdump`. The first capture should see packets; the management interface should **not**. `ip -j route get ... from ...` is checked prior to every channel start as a guardrail, but packet capture verifies the real path.
 
 ## 6. Media and codec notes
 
@@ -224,7 +224,7 @@ Playlist playout, source normalization, truly seamless loop continuity, configur
 
 ## Live internet channels and M3U playlists (v1.2)
 
-The **Live Providers** screen adds discoverable channels from ordinary, authorized **Extended M3U** or **JSON** catalogs. The server fetches catalog data from the management (office) network, then FFmpeg reads the chosen live HTTP(S) source and transmits MPEG-TS over the separately configured IPTV interface. The original local video loop mode is unchanged.
+The **Live Providers** screen adds discoverable channels from ordinary, authorized **Extended M3U** or **JSON** catalogs. The server fetches catalog data from the management network, then FFmpeg reads the chosen live HTTP(S) source and transmits MPEG-TS over the separately configured IPTV interface. The original local video loop mode is unchanged.
 
 1. Open **Live Providers** and use **Add Hilay TV** or **Add IPTV-org (Global)**, or add any other accessible HTTP(S) extended-M3U playlist.
 2. Select a playlist, browse by group, search channel names and paginate through results, and select **Add**.
@@ -254,12 +254,12 @@ A JSON provider must be an array of `{id, name, url, group?, icon?}` entries:
 ]
 ```
 
-Provider-backed channel records save a **provider ID and channel key**, not a potentially expiring URL. On start/restart/retry the application resolves the channel from a cached provider directory (refreshed at most every 3 minutes, or at least 30 seconds apart on forced recovery), and checks that the selected upstream's route uses the office NIC. The live FFmpeg process is monitored for exit or stalled progress. With **Auto-recover** enabled, live feeds retry indefinitely with exponential backoff capped at one minute (local video channels keep their original retry policy). When upstream transmission stops there will usually be a broadcast interruption while the source is reacquired; seamless standby/failover is **not implemented** in this release.
+Provider-backed channel records save a **provider ID and channel key**, not a potentially expiring URL. On start/restart/retry the application resolves the channel from a cached provider directory (refreshed at most every 3 minutes, or at least 30 seconds apart on forced recovery), and checks that the selected upstream's route uses the management NIC. The live FFmpeg process is monitored for exit or stalled progress. With **Auto-recover** enabled, live feeds retry indefinitely with exponential backoff capped at one minute (local video channels keep their original retry policy). When upstream transmission stops there will usually be a broadcast interruption while the source is reacquired; seamless standby/failover is **not implemented** in this release.
 
 ### Network separation
 
-- **Office / internet ingress:** configured `management.interface` (e.g. `ens18`, `10.50.0.128/24`). The catalog HTTP client explicitly binds to this interface's source address. Linux egress routing is checked for provider and live input hostnames. **FFmpeg itself uses normal Ubuntu routing for HTTP(S) inputs**, so the VM must keep its default internet route via the office NIC; if strict isolation is required, enforce it with host firewall/policy routing.
-- **IPTV multicast egress:** configured `streaming.interface` (e.g. `ens19`, `192.168.80.183/24`), the FFmpeg multicast output's `localaddr` and egress route are validated as in v1.0.0.
+- **Management / internet ingress:** configured `management.interface` (e.g. `ens18`, `10.50.0.50/24`). The catalog HTTP client explicitly binds to this interface's source address. Linux egress routing is checked for provider and live input hostnames. **FFmpeg itself uses normal Ubuntu routing for HTTP(S) inputs**, so the VM must keep its default internet route via the management NIC; if strict isolation is required, enforce it with host firewall/policy routing.
+- **IPTV multicast egress:** configured `streaming.interface` (e.g. `ens19`, `192.168.80.50/24`), the FFmpeg multicast output's `localaddr` and egress route are validated as in v1.0.0.
 - Existing gateways and DNS servers remain Ubuntu/Netplan responsibilities. **Do not create a second default gateway** merely to enable internet input.
 
 The input HTTP client disallows URLs resolving to private, loopback, link-local and multicast IPv4 ranges. IPv6-only upstreams and intranet-based streaming servers are not supported by this initial implementation. Only HTTP(S) stream sources are supported; DRM, credential harvesting, encrypted provider metadata, and proprietary Kodi playback plugins are **not** integrated.
@@ -327,7 +327,7 @@ patch.
 
 Live internet channels now use a **two-stage disk-backed pipeline**:
 
-1. An FFmpeg downloader reads the upstream HLS/HTTP source using the existing office-network routing checks. It remuxes the source without transcoding into rolling, completed MPEG-TS segments under `data/live-buffer/<channel-uuid>/`.
+1. An FFmpeg downloader reads the upstream HLS/HTTP source using the existing management-network routing checks. It remuxes the source without transcoding into rolling, completed MPEG-TS segments under `data/live-buffer/<channel-uuid>/`.
 2. Once at least **20 seconds** of completed segments are present, a separate FFmpeg broadcaster reads the local HLS playlist at real-time pace, applies the selected channel profile (Direct Copy, MPEG-2, MPEG-4, H.264), and sends MPEG-TS multicast through the configured IPTV NIC.
 
 The rolling playlist retains **24 segments**, nominally about 48 seconds with 2-second GOPs. Actual retention varies with upstream keyframe spacing and segment lengths. FFmpeg deletes expired segments, and the app removes a channel's buffer when it stops or restarts. A 5 Mbps source uses roughly 30 MB for 48 seconds of buffered media (plus overhead). Allocate sufficient storage for concurrently active channels. Buffer files are not exposed over HTTP.
