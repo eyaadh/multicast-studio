@@ -40,14 +40,14 @@ function displayValue(value: unknown): string {
         @change="query = ($event.target as HTMLInputElement).value"
         @blur="query = ''"
       />
-      <ComboboxButton class="absolute inset-y-0 right-0 flex items-center rounded-r-xl px-3 text-slate-400 hover:text-indigo-200 focus:outline-none" :aria-label="`Show ${label} options`">
+      <ComboboxButton class="absolute inset-y-0 right-0 flex items-center rounded-r-xl px-3 text-zinc-500 hover:text-emerald-600 dark:text-zinc-400 dark:hover:text-emerald-400 focus:outline-none" :aria-label="`Show ${label} options`">
         <ChevronDown :size="17" aria-hidden="true" />
       </ComboboxButton>
       <transition leave-active-class="transition ease-in duration-100" leave-from-class="opacity-100" leave-to-class="opacity-0">
-        <ComboboxOptions class="absolute z-50 mt-1 max-h-64 w-full overflow-auto rounded-xl border border-white/10 bg-[#1b253c] py-1 text-sm shadow-2xl shadow-black/60 focus:outline-none">
-          <div v-if="!filtered.length" class="px-3 py-3 text-sm text-slate-400">No matching options</div>
+        <ComboboxOptions class="absolute z-50 mt-1 max-h-64 w-full overflow-auto rounded-xl border border-zinc-200 bg-white py-1 text-sm shadow-xl shadow-zinc-900/10 dark:border-white/10 dark:bg-zinc-900 dark:shadow-black/50 focus:outline-none">
+          <div v-if="!filtered.length" class="px-3 py-3 text-sm text-zinc-500 dark:text-zinc-400">No matching options</div>
           <ComboboxOption v-for="option in filtered" :key="String(option.value)" :value="option.value" :disabled="option.disabled" as="template" v-slot="{ active, selected: isSelected, disabled: isDisabled }">
-            <li :class="['relative flex cursor-pointer items-center gap-2 px-3 py-2.5', active ? 'bg-indigo-600 text-white' : 'text-slate-100', isDisabled ? 'opacity-40' : '']">
+            <li :class="['relative flex cursor-pointer items-center gap-2 px-3 py-2.5', active ? 'bg-emerald-600 text-white dark:bg-emerald-500 dark:text-zinc-950' : 'text-zinc-900 dark:text-zinc-100', isDisabled ? 'opacity-40' : '']">
               <span class="min-w-0 flex-1"><span class="block truncate font-medium">{{ option.label }}</span><span v-if="option.description" class="block truncate text-xs opacity-70">{{ option.description }}</span></span>
               <Check v-if="isSelected" :size="16" class="shrink-0" aria-hidden="true" />
             </li>

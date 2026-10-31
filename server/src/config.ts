@@ -5,14 +5,20 @@ import { networkInterfaces } from 'node:os'
 import { z } from 'zod'
 
 const schema = z.object({
-  management: z.object({interface: z.string().min(1), port: z.number().int().min(1).max(65535)}),
+  management: z.object({ interface: z.string().min(1), port: z.number().int().min(1).max(65535) }),
   streaming: z.object({
-    interface: z.string().min(1), multicastCIDR: z.string().min(1),
+    interface: z.string().min(1),
+    multicastCIDR: z.string().min(1),
     defaultTTL: z.number().int().min(1).max(255),
-    packetSize: z.number().int().min(188).max(65507), verifyEgressRoute: z.boolean()
+    packetSize: z.number().int().min(188).max(65507),
+    verifyEgressRoute: z.boolean(),
   }),
-  storage: z.object({dataDirectory: z.string().min(1), importDirectory: z.string().min(1), maxUploadGB: z.number().positive().max(100)}),
-  tools: z.object({ffmpeg: z.string().min(1), ffprobe: z.string().min(1)})
+  storage: z.object({
+    dataDirectory: z.string().min(1),
+    importDirectory: z.string().min(1),
+    maxUploadGB: z.number().positive().max(100),
+  }),
+  tools: z.object({ ffmpeg: z.string().min(1), ffprobe: z.string().min(1) }),
 })
 
 const configPath = resolve(process.env.STREAMER_CONFIG || 'config/streamer.json')
@@ -24,12 +30,19 @@ export const importDirectory = resolve(config.storage.importDirectory)
 
 export function interfaceIPv4(name: string): string {
   const entries = networkInterfaces()[name] || []
-  const found = entries.find((item) => item.family === 'IPv4' && !item.internal)
-    ?? entries.find((item) => item.family === 'IPv4')
-  if (!found) throw new Error(`Interface '${name}' has no IPv4 address. Check config/streamer.json and ip -br addr.`)
+  const found =
+    entries.find((item) => item.family === 'IPv4' && !item.internal) ??
+    entries.find((item) => item.family === 'IPv4')
+  if (!found)
+    throw new Error(
+      `Interface '${name}' has no IPv4 address. Check config/streamer.json and ip -br addr.`,
+    )
   return found.address
 }
-if (process.env.NODE_ENV === 'production' && config.management.interface === config.streaming.interface) {
+if (
+  process.env.NODE_ENV === 'production' &&
+  config.management.interface === config.streaming.interface
+) {
   throw new Error('Production management and streaming must use different NICs')
 }
 export const managementIP = interfaceIPv4(config.management.interface)
@@ -38,7 +51,12 @@ export const streamingIP = interfaceIPv4(config.streaming.interface)
 export const adminUser = process.env.ADMIN_USER || ''
 export const adminPassword = process.env.ADMIN_PASSWORD || ''
 export const sessionSecret = process.env.SESSION_SECRET || ''
-if (!adminUser || !adminPassword || adminPassword === 'SET_A_LONG_UNIQUE_PASSWORD_HERE' || adminPassword.length < 12) {
+if (
+  !adminUser ||
+  !adminPassword ||
+  adminPassword === 'SET_A_LONG_UNIQUE_PASSWORD_HERE' ||
+  adminPassword.length < 12
+) {
   throw new Error('Set ADMIN_USER and a unique ADMIN_PASSWORD (12+ characters) in .env')
 }
 if (sessionSecret.length < 32 || sessionSecret === 'REPLACE_WITH_AT_LEAST_32_RANDOM_CHARACTERS') {

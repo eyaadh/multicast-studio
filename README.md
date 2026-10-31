@@ -44,11 +44,16 @@ Edit `config/streamer.json` and set the **actual NIC names**, as reported by `ip
 
 ```json
 {
-  "management": {"interface":"ens18", "port":3000},
-  "streaming": {"interface":"ens19", "multicastCIDR":"239.80.0.0/16", "defaultTTL":1,
-    "packetSize":1316, "verifyEgressRoute":true},
-  "storage": {"dataDirectory":"./data", "importDirectory":"./imports", "maxUploadGB":8},
-  "tools": {"ffmpeg":"ffmpeg", "ffprobe":"ffprobe"}
+  "management": { "interface": "ens18", "port": 3000 },
+  "streaming": {
+    "interface": "ens19",
+    "multicastCIDR": "239.80.0.0/16",
+    "defaultTTL": 1,
+    "packetSize": 1316,
+    "verifyEgressRoute": true
+  },
+  "storage": { "dataDirectory": "./data", "importDirectory": "./imports", "maxUploadGB": 8 },
+  "tools": { "ffmpeg": "ffmpeg", "ffprobe": "ffprobe" }
 }
 ```
 
@@ -60,10 +65,10 @@ The HTTP server binds **only** to the selected management NIC IPv4 address. FFmp
 
 Your environment uses these subnets:
 
-| Purpose | VLAN subnet | Gateway | DNS | Example server IP | Example NIC |
-|---|---|---|---|---|---|
-| Office/management | `10.50.0.0/24` | `10.50.0.2` | `10.50.0.3` | `10.50.0.50` | `ens18` |
-| IPTV/VOD | `192.168.80.0/24` | `192.168.80.2` | optional | `192.168.80.50` | `ens19` |
+| Purpose           | VLAN subnet       | Gateway        | DNS         | Example server IP | Example NIC |
+| ----------------- | ----------------- | -------------- | ----------- | ----------------- | ----------- |
+| Office/management | `10.50.0.0/24`    | `10.50.0.2`    | `10.50.0.3` | `10.50.0.50`      | `ens18`     |
+| IPTV/VOD          | `192.168.80.0/24` | `192.168.80.2` | optional    | `192.168.80.50`   | `ens19`     |
 
 **Example IPs and interface names are placeholders, not known assigned addresses.**
 
@@ -170,28 +175,28 @@ sudo tcpdump -ni ens18 'udp and dst host 239.80.0.1 and dst port 5000'
 
 All endpoints except health and login/session require the authenticated session cookie.
 
-| Method | Endpoint | Purpose |
-|---|---|---|
-| GET | `/api/healthz` | Basic service check |
-| POST | `/api/auth/login` | Login |
-| POST | `/api/auth/logout` | Logout |
-| GET | `/api/channels` | Channels and runtime status |
-| POST | `/api/channels` | Create channel |
-| PATCH | `/api/channels/:id` | Edit stopped channel |
-| DELETE | `/api/channels/:id` | Delete stopped channel |
-| POST | `/api/channels/:id/start` | Start channel |
-| POST | `/api/channels/:id/stop` | Stop channel |
-| POST | `/api/channels/:id/restart` | Restart channel |
-| GET | `/api/channels/playlist.m3u` | Download VLC/IPTV playlist |
-| GET | `/api/media` | List media |
-| POST | `/api/media/upload` | Stream raw file with `X-Filename` header |
-| GET | `/api/media/import-candidates` | List import-directory files |
-| POST | `/api/media/import` | Register existing file by filename |
-| GET | `/api/media/:id/preview` | Range-capable source preview |
-| DELETE | `/api/media/:id` | Remove unreferenced source |
-| GET | `/api/system` | Read-only config and host statistics |
-| GET | `/api/network/check/:group` | Verify egress NIC |
-| GET | `/api/events` | Live Server-Sent Events |
+| Method | Endpoint                       | Purpose                                  |
+| ------ | ------------------------------ | ---------------------------------------- |
+| GET    | `/api/healthz`                 | Basic service check                      |
+| POST   | `/api/auth/login`              | Login                                    |
+| POST   | `/api/auth/logout`             | Logout                                   |
+| GET    | `/api/channels`                | Channels and runtime status              |
+| POST   | `/api/channels`                | Create channel                           |
+| PATCH  | `/api/channels/:id`            | Edit stopped channel                     |
+| DELETE | `/api/channels/:id`            | Delete stopped channel                   |
+| POST   | `/api/channels/:id/start`      | Start channel                            |
+| POST   | `/api/channels/:id/stop`       | Stop channel                             |
+| POST   | `/api/channels/:id/restart`    | Restart channel                          |
+| GET    | `/api/channels/playlist.m3u`   | Download VLC/IPTV playlist               |
+| GET    | `/api/media`                   | List media                               |
+| POST   | `/api/media/upload`            | Stream raw file with `X-Filename` header |
+| GET    | `/api/media/import-candidates` | List import-directory files              |
+| POST   | `/api/media/import`            | Register existing file by filename       |
+| GET    | `/api/media/:id/preview`       | Range-capable source preview             |
+| DELETE | `/api/media/:id`               | Remove unreferenced source               |
+| GET    | `/api/system`                  | Read-only config and host statistics     |
+| GET    | `/api/network/check/:group`    | Verify egress NIC                        |
+| GET    | `/api/events`                  | Live Server-Sent Events                  |
 
 ## 9. Verification
 
@@ -203,15 +208,15 @@ npm run build
 
 ### Troubleshooting
 
-| Symptom | Check |
-|---|---|
-| API fails immediately | Check interface names (`ip -br -4 addr`), `.env`, JSON config, Node 22 |
-| Channel error: unsafe route | `ip -j route get <group> from <VOD-ip>`; add persistent multicast route via VOD NIC |
-| No picture on STB | `tcpdump` egress, IGMP snooping/querier, group/port, decoder compatibility |
-| VLC receives but STB does not | Test MPEG-2 vs MPEG-4 Part 2, lower bitrate/SD, audio MP2, MPEG-TS options |
-| Channel restarts repeatedly | Read card error and `journalctl -u multicast-studio`, verify source file and FFmpeg |
-| Channel source fails after imported file move | Restore registered file at its original absolute path |
-| Browser source preview fails | Browser may lack that video's codecs/container; try VLC |
+| Symptom                                       | Check                                                                               |
+| --------------------------------------------- | ----------------------------------------------------------------------------------- |
+| API fails immediately                         | Check interface names (`ip -br -4 addr`), `.env`, JSON config, Node 22              |
+| Channel error: unsafe route                   | `ip -j route get <group> from <VOD-ip>`; add persistent multicast route via VOD NIC |
+| No picture on STB                             | `tcpdump` egress, IGMP snooping/querier, group/port, decoder compatibility          |
+| VLC receives but STB does not                 | Test MPEG-2 vs MPEG-4 Part 2, lower bitrate/SD, audio MP2, MPEG-TS options          |
+| Channel restarts repeatedly                   | Read card error and `journalctl -u multicast-studio`, verify source file and FFmpeg |
+| Channel source fails after imported file move | Restore registered file at its original absolute path                               |
+| Browser source preview fails                  | Browser may lack that video's codecs/container; try VLC                             |
 
 ## Scope / next milestones
 
@@ -226,7 +231,7 @@ The **Live Providers** screen adds discoverable channels from ordinary, authoriz
 3. Select the legacy MPEG-4, MPEG-2, H.264, or copy output profile for your receiving hardware.
 4. Start the multicast channel and test with `udp://@239.80.0.1:5000` in VLC.
 
-Alternatively, create a channel and select **Live internet stream** to enter a direct `.m3u8` or other compatible HTTP(S) URL. An HLS manifest is a *single live input*, not a provider directory.
+Alternatively, create a channel and select **Live internet stream** to enter a direct `.m3u8` or other compatible HTTP(S) URL. An HLS manifest is a _single live input_, not a provider directory.
 
 An M3U provider must include `#EXTM3U` and `#EXTINF` entries:
 
@@ -240,7 +245,12 @@ A JSON provider must be an array of `{id, name, url, group?, icon?}` entries:
 
 ```json
 [
-  {"id":"demo-channel","name":"Test Channel","group":"Test","url":"https://your-authorized-cdn.example/live/index.m3u8"}
+  {
+    "id": "demo-channel",
+    "name": "Test Channel",
+    "group": "Test",
+    "url": "https://your-authorized-cdn.example/live/index.m3u8"
+  }
 ]
 ```
 
@@ -326,7 +336,6 @@ The dashboard shows **Buffering before broadcast** until the startup buffer is r
 
 **Important:** This introduces approximately 20+ seconds of delay and can smooth short download variations; it does not guarantee uninterrupted multicast during prolonged upstream outages, stalled encoding, expiring source tokens, or playlist discontinuities. The broadcaster may still stall when cached segments run out. Automatic recovery restarts both processes and refills the buffer before transmitting again. A continuously broadcast fallback/test card is **not** included in this patch. For a diagnostic baseline, use **Direct Copy** to avoid expensive transcoding on a 2-vCPU VM; older MPEG-2-only receivers still require a compatible output profile.
 
-
 ### Searchable selectors and live preview
 
 The dashboard uses searchable Headless UI comboboxes for catalog format, provider group,
@@ -343,3 +352,12 @@ No server-side preview transcoding or media proxy is started.
 
 After applying the UI patch, run `npm install` once to install `@headlessui/vue`
 and `hls.js` and update `package-lock.json`, then run `npm run build`.
+
+### Protocol-inspired dashboard appearance
+
+The management UI uses neutral zinc surfaces, emerald accents, compact rounded controls,
+and light/dark color schemes inspired by the provided Protocol design reference.
+Use the sun/moon control on the login page or dashboard header to switch themes.
+The selection is stored locally in the browser (`multicast-studio-theme`);
+when no selection has been made, the browser's preferred color scheme is used.
+No backend or streaming settings are affected.

@@ -38,8 +38,9 @@ export function parseBufferedSeconds(text: string): number {
   return Math.round(seconds * 10) / 10
 }
 export async function bufferedSeconds(id: string): Promise<number> {
-  try { return parseBufferedSeconds(await readFile(liveBufferPlaylist(id), 'utf8')) }
-  catch (error) {
+  try {
+    return parseBufferedSeconds(await readFile(liveBufferPlaylist(id), 'utf8'))
+  } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0
     throw error
   }

@@ -1,5 +1,10 @@
 {
   "extends": "../tsconfig.base.json",
-  "compilerOptions": {"types":["vite/client"],"lib":["ES2022","DOM","DOM.Iterable"],"jsx":"preserve","noEmit":true},
+  "compilerOptions": {
+    "types": ["vite/client"],
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "preserve",
+    "noEmit": true
+  },
   "include": ["src/**/*.ts", "src/**/*.vue"]
 }
