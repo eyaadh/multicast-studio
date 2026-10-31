@@ -12,7 +12,9 @@ import { join, extname } from 'node:path'
 import { cpus, freemem, totalmem, uptime, loadavg } from 'node:os'
 import { config, managementIP, streamingIP, mediaDirectory } from './config.js'
 import { checkRoute, assertMulticast, listInterfaces } from './network.js'
-import { getMedia, listMedia, mediaPublic, mediaInUse, deleteMedia, saveChannel, getChannel, listChannels, deleteChannel } from './db.js'
+import { getMedia, listMedia, mediaPublic, mediaInUse, deleteMedia, saveChannel, getChannel, listChannels, deleteChannel,
+  listProviders, getProvider, createProvider, removeProvider, providerInUse } from './db.js'
+import { validateHttpUrl, getProviderChannels, publicChannel } from './providers.js'
 import { startChannel, stopChannel, restartChannel, startAutostartChannels, snapshots, snapshot, running, forgetChannel, shutdown } from './supervisor.js'
 import { cleanName, importCandidates, registerImport, uploadVideo } from './media.js'
 import { isAuthenticated, verifyCredentials, makeSession, logout, loginAllowed, loginFailed, clearFailures } from './auth.js'
@@ -57,7 +59,12 @@ app.post('/api/auth/logout',c=>{logout(c);return c.json({ok:true})})
 
 const channelSchema = z.object({
   name:z.string().trim().min(1).max(100), description:z.string().max(300).default(''),
-  mediaId:z.string().uuid(), groupIp:z.string().min(7), port:z.number().int().min(1024).max(65535),
+  sourceType:z.enum(['media','live']).default('media'),
+  mediaId:z.string().uuid().nullable().default(null),
+  providerId:z.string().uuid().nullable().default(null),
+  providerChannelKey:z.string().min(1).max(100).nullable().default(null),
+  streamUrl:z.string().max(4096).nullable().default(null),
+  groupIp:z.string().min(7), port:z.number().int().min(1024).max(65535),
   profile:z.enum(['h264','mpeg4','mpeg2','copy']),
   videoBitrateKbps:z.number().int().min(250).max(40000),
   audioBitrateKbps:z.number().int().min(32).max(512),
@@ -69,9 +76,45 @@ const validateChannel = (input: unknown) => {
   const parsed = channelSchema.safeParse(input)
   if (!parsed.success) throw new Error(z.prettifyError(parsed.error))
   assertMulticast(parsed.data.groupIp,config.streaming.multicastCIDR)
-  if (!getMedia(parsed.data.mediaId)) throw new Error('Selected video does not exist')
+  if(parsed.data.sourceType==='media') {
+    if(!parsed.data.mediaId || !getMedia(parsed.data.mediaId))throw new Error('Selected video does not exist')
+    parsed.data.providerId=null;parsed.data.providerChannelKey=null;parsed.data.streamUrl=null
+  }else{
+    parsed.data.mediaId=null
+    if(parsed.data.providerId){
+      if(!getProvider(parsed.data.providerId) || !parsed.data.providerChannelKey)throw new Error('Valid provider channel is required')
+      parsed.data.streamUrl=null
+    }else{
+      if(!parsed.data.streamUrl)throw new Error('A live stream URL or provider channel is required')
+      validateHttpUrl(parsed.data.streamUrl)
+      parsed.data.providerChannelKey=null
+    }
+  }
   return parsed.data satisfies ChannelValues
 }
+const providerSchema=z.object({name:z.string().trim().min(1).max(100),kind:z.enum(['m3u','json']),url:z.string().max(4096)})
+app.get('/api/providers',c=>c.json(listProviders()))
+app.post('/api/providers',async c=>{
+  const result=providerSchema.safeParse(await c.req.json().catch(()=>null))
+  if(!result.success)return c.json({error:z.prettifyError(result.error)},400)
+  try{
+    validateHttpUrl(result.data.url)
+    return c.json(createProvider(result.data.name,result.data.kind,result.data.url),201)
+  }catch(e){return c.json({error:e instanceof Error?e.message:String(e)},400)}
+})
+app.delete('/api/providers/:id',c=>{
+  const id=c.req.param('id')
+  if(!getProvider(id))return c.json({error:'Provider not found'},404)
+  if(providerInUse(id))return c.json({error:'Provider is used by a multicast channel'},409)
+  removeProvider(id)
+  return c.json({ok:true})
+})
+app.get('/api/providers/:id/channels',async c=>{
+  const provider=getProvider(c.req.param('id'))
+  if(!provider)return c.json({error:'Provider not found'},404)
+  try{return c.json((await getProviderChannels(provider)).map(publicChannel))}
+  catch(e){return c.json({error:e instanceof Error?e.message:String(e)},502)}
+})
 app.get('/api/channels',c=>c.json(snapshots()))
 app.post('/api/channels',async c=>{
   try {const values = validateChannel(await c.req.json().catch(()=>null));return c.json(snapshot(saveChannel(values)),201)}

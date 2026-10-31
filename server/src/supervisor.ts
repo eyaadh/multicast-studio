@@ -1,6 +1,7 @@
 import { access } from 'node:fs/promises'
-import { getChannel, getMedia, listChannels, mediaPublic } from './db.js'
+import { getChannel, getMedia, getProvider, listChannels, mediaPublic } from './db.js'
 import { launchFFmpeg, parseProgressBlock } from './ffmpeg.js'
+import { resolveLiveSource } from './providers.js'
 import { checkRoute } from './network.js'
 import { config } from './config.js'
 import type { Channel, ChannelSnapshot, ChannelStatus, Progress } from './types.js'
@@ -57,92 +58,108 @@ function stateFor(id: string): RunningState {
 export function snapshot(ch: Channel): ChannelSnapshot {
   const s = stateFor(ch.id)
   const media = getMedia(ch.mediaId)
-  return {...ch, media:media ? mediaPublic(media) : null,status:s.status,pid:s.pid,
+  return {...ch, media:media ? mediaPublic(media) : null,
+    sourceLabel:ch.sourceType==='live' ? (ch.providerId ? `${getProvider(ch.providerId)?.name||'Provider'} · Live` : 'Direct live stream') : media?.name ?? null,
+    status:s.status,pid:s.pid,
     startedAt:s.startedAt,progress:s.progress,restarts:s.restarts,lastError:s.lastError}
 }
 export function snapshots() { return listChannels().map(snapshot) }
 export function running(id: string) {
   const s = states.get(id)
-  return !!s && (s.process !== null || s.retryTimer !== null || s.status === 'starting')
+  return !!s && (s.process !== null || s.retryTimer !== null || s.status === 'starting' || s.status === 'recovering')
 }
 function clearRetry(s: RunningState) { if (s.retryTimer) clearTimeout(s.retryTimer); s.retryTimer = null }
+function queueRecovery(id:string,channel:Channel,s:RunningState):void {
+  if(s.stopRequested || isShuttingDown || !channel.autoRecover){s.status='error';return}
+  // Live upstreams can go offline for hours. Keep retrying at a capped interval;
+  // local files retain the original conservative six-retry behavior.
+  if(channel.sourceType==='media' && s.failures>=6){s.status='error';return}
+  const delay=Math.min(60000,2000 * 2 ** Math.min(s.failures,5))
+  s.failures++
+  s.restarts++
+  s.status='recovering'
+  clearRetry(s)
+  s.retryTimer=setTimeout(()=>{
+    s.retryTimer=null
+    startChannel(id,true).catch(error=>console.error(`[channel ${id}] retry:`,error instanceof Error?error.message:error))
+  },delay)
+  s.retryTimer.unref()
+}
 export async function startChannel(id: string, recovering = false): Promise<ChannelSnapshot> {
   if (isShuttingDown) throw new Error('The application is shutting down')
   const channel = getChannel(id)
   if (!channel) throw new Error('Channel not found')
   const s = stateFor(id)
-  if (s.process || s.status === 'stopping') throw new Error('Channel is already running or stopping')
+  if (s.process || s.status === 'stopping' || s.status === 'starting') throw new Error('Channel is already starting, running or stopping')
+  if (s.retryTimer && !recovering) throw new Error('Channel is recovering; stop it before restarting manually')
   clearRetry(s)
   s.stopRequested = false
   s.status = recovering ? 'recovering' : 'starting'
+  const runId=++s.runId
+  s.lastProgressAt=Date.now()
   try {
-    const media = getMedia(channel.mediaId)
-    if (!media) throw new Error('Selected media no longer exists')
-    await access(media.storedPath)
+    // Resolve the provider on EVERY launch, not just when the channel is created.
+    // Signed/rotated URLs are therefore refreshed after a source interruption.
+    let source
+    if(channel.sourceType==='live')source=await resolveLiveSource(channel)
+    else {
+      if(!channel.mediaId)throw new Error('No local video is configured')
+      source=getMedia(channel.mediaId)
+      if (!source) throw new Error('Selected media no longer exists')
+      await access(source.storedPath)
+    }
+    if(s.stopRequested || runId!==s.runId)throw new Error('Start cancelled')
     const check = await checkRoute(channel.groupIp)
     if (config.streaming.verifyEgressRoute && !check.ok) throw new Error(check.message)
-    const child = launchFFmpeg(channel, media)
-    const runId = ++s.runId
-    s.process = child
-    s.pid = child.pid ?? null
-    s.status = 'starting'
-    s.startedAt = new Date().toISOString()
-    s.lastProgressAt = Date.now()
-    s.progress = {}
-    s.lastError = null
-    s.stderr = ''
-    let buffered = ''
-    child.stdout.on('data', (chunk: Buffer) => {
-      if (runId !== s.runId) return
-      buffered += chunk.toString('utf8')
-      if (buffered.length > 16384) buffered = buffered.slice(-8192)
-      let i: number
-      while ((i = buffered.indexOf('\nprogress=')) !== -1) {
-        const end = buffered.indexOf('\n',i+1)
-        if (end === -1) break
-        const block = buffered.slice(0,end+1)
-        buffered = buffered.slice(end+1)
-        s.progress = parseProgressBlock(block)
-        s.lastProgressAt = Date.now()
-        if (s.status === 'starting' || s.status === 'recovering') s.status = 'streaming'
-        if (Date.now() - new Date(s.startedAt || 0).getTime() > 120000) s.failures = 0
+    if(s.stopRequested || runId!==s.runId)throw new Error('Start cancelled')
+    const child = launchFFmpeg(channel,source)
+    s.process=child
+    s.pid=child.pid??null
+    s.status='starting'
+    s.startedAt=new Date().toISOString()
+    s.lastProgressAt=Date.now()
+    s.progress={}
+    s.lastError=null
+    s.stderr=''
+    let buffered=''
+    child.stdout.on('data',(chunk:Buffer)=>{
+      if(runId!==s.runId)return
+      buffered+=chunk.toString('utf8')
+      if(buffered.length>16384)buffered=buffered.slice(-8192)
+      let i:number
+      while((i=buffered.indexOf('\nprogress='))!==-1){
+        const end=buffered.indexOf('\n',i+1)
+        if(end===-1)break
+        const block=buffered.slice(0,end+1)
+        buffered=buffered.slice(end+1)
+        s.progress=parseProgressBlock(block)
+        s.lastProgressAt=Date.now()
+        if(s.status==='starting'||s.status==='recovering')s.status='streaming'
+        if(Date.now()-new Date(s.startedAt||0).getTime()>120000)s.failures=0
       }
     })
-    child.stderr.on('data', (chunk: Buffer) => { s.stderr = (s.stderr + chunk.toString('utf8')).slice(-2400) })
-    let handled = false
-    const exit = (code: number | null, signal: string | null, error?: Error) => {
-      if (handled || runId !== s.runId) return
-      handled = true
-      s.process = null
-      s.pid = null
-      if (s.stopRequested || isShuttingDown) { s.status='stopped'; return }
-      const tail = s.stderr.trim()
-      s.lastError = (signal === 'SIGKILL' && s.lastError)
-        ? s.lastError
-        : (error?.message || `FFmpeg exited (${code ?? signal ?? 'unknown'})${tail ? ': ' + tail.slice(-600) : ''}`)
-      s.status = 'error'
+    child.stderr.on('data',(chunk:Buffer)=>{s.stderr=(s.stderr+chunk.toString('utf8')).slice(-2400)})
+    let handled=false
+    const exit=(code:number|null,signal:string|null,error?:Error)=>{
+      if(handled || runId!==s.runId)return
+      handled=true;s.process=null;s.pid=null
+      if(s.stopRequested||isShuttingDown){s.status='stopped';return}
+      const tail=s.stderr.trim()
+      // FFmpeg logs may contain signed upstream URLs; do not expose the log tail.
+      s.lastError=error?.message || `FFmpeg exited (${code??signal??'unknown'})${tail?' — inspect server logs for details':''}`
       console.error(`[channel ${id}] ${s.lastError}`)
-      if (channel.autoRecover && s.failures < 6) {
-        const delay = Math.min(60000, 2000 * Math.pow(2, s.failures++))
-        s.restarts++
-        s.status = 'recovering'
-        s.retryTimer = setTimeout(() => {
-          s.retryTimer = null
-          startChannel(id,true).catch(e => {
-            s.status='error'
-            s.lastError = e instanceof Error ? e.message : String(e)
-            console.error(`[channel ${id}] recovery failed: ${s.lastError}`)
-          })
-        },delay)
-      }
+      queueRecovery(id,channel,s)
     }
-    child.on('error', (e) => exit(null,null,e))
-    child.on('exit', (code, signal) => exit(code,signal))
+    child.on('error',e=>exit(null,null,e))
+    child.on('exit',(code,signal)=>exit(code,signal))
     return snapshot(channel)
-  } catch (error) {
-    s.status = 'error'
-    s.lastError = error instanceof Error ? error.message : String(error)
-    throw error
+  }catch(error){
+    if(s.stopRequested || runId!==s.runId)return snapshot(channel)
+    s.lastError=error instanceof Error?error.message:String(error)
+    console.error(`[channel ${id}] start failed: ${s.lastError}`)
+    queueRecovery(id,channel,s)
+    if(!recovering)throw error
+    return snapshot(channel)
   }
 }
 export async function stopChannel(id: string): Promise<ChannelSnapshot> {
@@ -150,10 +167,11 @@ export async function stopChannel(id: string): Promise<ChannelSnapshot> {
   if (!channel) throw new Error('Channel not found')
   const s = stateFor(id)
   s.stopRequested = true
+  ++s.runId
   clearRetry(s)
   s.failures = 0
   const child = s.process
-  if (!child) { s.status = 'stopped'; return snapshot(channel) }
+  if (!child) { s.status = 'stopped'; s.pid=null;return snapshot(channel) }
   s.status = 'stopping'
   await new Promise<void>((resolve) => {
     const timeout = setTimeout(() => { if (s.process === child) child.kill('SIGKILL') }, 5000)

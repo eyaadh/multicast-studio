@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { inCIDR, assertMulticast } from '../src/network.ts'
 import { ffmpegArguments, parseProgressBlock } from '../src/ffmpeg.ts'
 import { cleanName } from '../src/media.ts'
+import { parseM3u, parseJsonCatalog, validateHttpUrl } from '../src/providers.ts'
 import type { Channel, Media } from '../src/types.ts'
 
 test('accept only allowed 239.x multicast range',()=>{
@@ -16,7 +17,7 @@ test('reject unsafe import filenames',()=>{
   assert.equal(cleanName('welcome.mp4'),'welcome.mp4')
   assert.throws(()=>cleanName('dangerous.exe'))
 })
-const channel:Channel={id:'1',name:'Info Channel',description:'',mediaId:'m1',groupIp:'239.80.0.1',port:5000,
+const channel:Channel={id:'1',name:'Info Channel',description:'',sourceType:'media',mediaId:'m1',providerId:null,providerChannelKey:null,streamUrl:null,groupIp:'239.80.0.1',port:5000,
   profile:'mpeg4',videoBitrateKbps:2500,audioBitrateKbps:128,width:1280,height:720,fps:25,ttl:1,
   autoStart:true,autoRecover:true,serviceId:101,createdAt:'',updatedAt:''}
 const media:Media={id:'m1',name:'welcome.mp4',storedPath:'/tmp/welcome.mp4',origin:'upload',bytes:1024,
@@ -38,4 +39,27 @@ test('FFmpeg progress parsing',()=>{
   assert.equal(data.frame,124)
   assert.equal(data.fps,25)
   assert.equal(data.speed,'1.00x')
+})
+
+test('live HLS inputs do not loop or use file inputs; MPEG-TS output is still multicast',()=>{
+  const live={...channel,sourceType:'live' as const,mediaId:null,providerId:'p1',providerChannelKey:'c1',streamUrl:null}
+  const args=ffmpegArguments(live,{key:'c1',name:'Live',group:'',logo:null,url:'https://example.org/live.m3u8'})
+  assert.equal(args.includes('-stream_loop'),false)
+  assert.equal(args.includes('-re'),false)
+  assert.equal(args[args.indexOf('-i')+1],'https://example.org/live.m3u8')
+  assert.ok(args.includes('-rw_timeout'))
+  assert.match(args.at(-1)||'',/udp:\/\/239\.80\.0\.1:5000/)
+})
+test('M3U channel identity survives signed-url refresh and changes elsewhere in playlist',()=>{
+  const first=parseM3u('#EXTM3U\n#EXTINF:-1 tvg-id="channel-1" group-title="Sports",Sports 1\nhttps://example.org/abc.m3u8?token=one\n','https://example.org/list.m3u')
+  const second=parseM3u('#EXTM3U\n#EXTINF:-1,Unrelated\nhttps://example.org/unrelated.m3u8\n#EXTINF:-1 tvg-id="channel-1" group-title="Sports",Sports 1\nhttps://example.org/abc.m3u8?token=two\n','https://example.org/list.m3u')
+  assert.equal(first.length,1)
+  assert.equal(first[0]?.key,second[1]?.key)
+  assert.notEqual(first[0]?.url,second[1]?.url)
+})
+test('JSON provider channel directory parsing and URL safeguards',()=>{
+  const items=parseJsonCatalog(JSON.stringify([{id:'station-x',name:'Station X',url:'/live.m3u8'}]),'https://example.org/channels.json')
+  assert.equal(items[0]?.url,'https://example.org/live.m3u8')
+  assert.throws(()=>validateHttpUrl('file:///etc/passwd'))
+  assert.throws(()=>validateHttpUrl('https://password:secret@example.org/live.m3u8'))
 })

@@ -1,6 +1,7 @@
 import { spawn, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { Channel, Media, Progress } from './types.js'
+import type { ProviderChannel } from './providers.js'
 import { config, streamingIP } from './config.js'
 
 const execFileAsync = promisify(execFile)
@@ -18,10 +19,17 @@ export async function probeVideo(path: string) {
     width: video.width || null, height:video.height || null
   }
 }
-export function ffmpegArguments(ch: Channel, media: Media): string[] {
+export function ffmpegArguments(ch: Channel, source: Media | ProviderChannel): string[] {
+  const isLive = ch.sourceType === 'live'
+  const inputArgs = isLive
+    ? ['-protocol_whitelist','http,https,tcp,tls,crypto,data',
+      '-rw_timeout','15000000',
+      ...('userAgent' in source && source.userAgent ? ['-user_agent',source.userAgent] : []),
+      ...('referer' in source && source.referer ? ['-referer',source.referer] : []),
+      '-i',(source as ProviderChannel).url]
+    : ['-re','-stream_loop','-1','-i',(source as Media).storedPath]
   const base = ['-hide_banner','-nostdin','-loglevel','warning','-stats_period','2',
-    '-progress','pipe:1','-re','-stream_loop','-1','-i',media.storedPath,
-    '-map','0:v:0','-map','0:a:0?','-sn','-dn']
+    '-progress','pipe:1',...inputArgs,'-map','0:v:0','-map','0:a:0?','-sn','-dn']
   let codecArgs: string[]
   if (ch.profile === 'copy') {
     codecArgs = ['-c','copy']
@@ -53,6 +61,6 @@ export function parseProgressBlock(block: string): Progress {
     totalSize:safeNumber(raw.total_size),updatedAt:new Date().toISOString()
   }
 }
-export function launchFFmpeg(ch: Channel, media: Media) {
-  return spawn(config.tools.ffmpeg, ffmpegArguments(ch, media), {stdio:['ignore','pipe','pipe'] as const})
+export function launchFFmpeg(ch: Channel, source: Media | ProviderChannel) {
+  return spawn(config.tools.ffmpeg, ffmpegArguments(ch, source), {stdio:['ignore','pipe','pipe'] as const})
 }

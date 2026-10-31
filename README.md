@@ -216,3 +216,57 @@ npm run build
 ## Scope / next milestones
 
 Playlist playout, source normalization, truly seamless loop continuity, configurable TS CBR/PIDs, receiver-side health probes, audit logs and multi-user accounts are **not** included in this initial version.
+
+## Live internet channels and provider catalogs (v1.1)
+
+The **Live Providers** screen adds discoverable channels from ordinary, authorized **Extended M3U** or **JSON** catalogs. The server fetches catalog data from the management (office) network, then FFmpeg reads the chosen live HTTP(S) source and transmits MPEG-TS over the separately configured IPTV interface. The original local video loop mode is unchanged.
+
+1. Open **Live Providers** and add the HTTP(S) URL of an authorized provider playlist.
+2. Select the provider, browse or search the available channels, and select **Add**.
+3. Select the legacy MPEG-4, MPEG-2, H.264, or copy output profile for your receiving hardware.
+4. Start the multicast channel and test with `udp://@239.80.0.1:5000` in VLC.
+
+Alternatively, create a channel and select **Live internet stream** to enter a direct `.m3u8` or other compatible HTTP(S) URL. An HLS manifest is a *single live input*, not a provider directory.
+
+An M3U provider must include `#EXTM3U` and `#EXTINF` entries:
+
+```m3u
+#EXTM3U
+#EXTINF:-1 tvg-id="demo-channel" group-title="Test",Test Channel
+https://your-authorized-cdn.example/live/index.m3u8
+```
+
+A JSON provider must be an array of `{id, name, url, group?, icon?}` entries:
+
+```json
+[
+  {"id":"demo-channel","name":"Test Channel","group":"Test","url":"https://your-authorized-cdn.example/live/index.m3u8"}
+]
+```
+
+Provider-backed channel records save a **provider ID and channel key**, not a potentially expiring URL. On every start/restart/retry the application fetches the provider playlist again, re-identifies the entry, and checks that the selected upstream's route uses the office NIC. The live FFmpeg process is monitored for exit or stalled progress. With **Auto-recover** enabled, live feeds retry indefinitely with exponential backoff capped at one minute (local video channels keep their original retry policy). When upstream transmission stops there will usually be a broadcast interruption while the source is reacquired; seamless standby/failover is **not implemented** in this release.
+
+### Network separation
+
+- **Office / internet ingress:** configured `management.interface` (e.g. `ens18`, `10.50.0.128/24`). The catalog HTTP client explicitly binds to this interface's source address. Linux egress routing is checked for provider and live input hostnames. **FFmpeg itself uses normal Ubuntu routing for HTTP(S) inputs**, so the VM must keep its default internet route via the office NIC; if strict isolation is required, enforce it with host firewall/policy routing.
+- **IPTV multicast egress:** configured `streaming.interface` (e.g. `ens19`, `192.168.80.183/24`), the FFmpeg multicast output's `localaddr` and egress route are validated as in v1.0.0.
+- Existing gateways and DNS servers remain Ubuntu/Netplan responsibilities. **Do not create a second default gateway** merely to enable internet input.
+
+The input HTTP client disallows URLs resolving to private, loopback, link-local and multicast IPv4 ranges. IPv6-only upstreams and intranet-based streaming servers are not supported by this initial implementation. Only HTTP(S) stream sources are supported; DRM, credential harvesting, encrypted provider metadata, and proprietary Kodi playback plugins are **not** integrated.
+
+**About the referenced Cricfy Kodi add-on:** It uses remotely configured and encrypted provider metadata. This patch implements the same **provider → channel → stream** workflow for unencrypted catalogs that you supply, but it does **not** automatically fetch or decrypt Cricfy's private provider directory. It does not include or redistribute Cricfy's source code or stream listings.
+
+### Deployment and database migration
+
+**Back up `data/streamer.sqlite` (and its `-wal`/`-shm` files if present) with the service stopped before upgrading.** On first run, the application rebuilds the original `channels` table in a transaction, preserving media channels while permitting new live channel source references. The new `providers` table is created automatically. Previous channel destinations, service IDs, media IDs, and autostart settings remain intact.
+
+```bash
+sudo systemctl stop multicast-studio
+# Take a VM snapshot or copy the data directory while stopped.
+npm install
+npm run build
+sudo systemctl start multicast-studio
+sudo journalctl -u multicast-studio -f
+```
+
+If you use a different systemd service name or run the server manually, adjust those commands accordingly. Check CPU utilization when transcoding internet streams to legacy MPEG-4; direct copy should only be used if the receiver supports the input codecs.
