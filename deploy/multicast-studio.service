@@ -1,0 +1,21 @@
+[Unit]
+Description=Multicast Studio IPTV Headend
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=multicast
+Group=multicast
+WorkingDirectory=/opt/multicast-studio
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node /opt/multicast-studio/server/dist/index.js
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+KillMode=control-group
+LimitNOFILE=65535
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,23 @@
+# EXAMPLE ONLY. Do not apply unchanged: network devices and IPs are illustrative.
+# On an existing Ubuntu VM, modify the actual Netplan file carefully.
+# Test from a VM console, not solely over SSH.
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    ens18:
+      dhcp4: false
+      addresses: [10.50.0.50/24]
+      nameservers:
+        addresses: [10.50.0.3]
+      routes:
+        - to: default
+          via: 10.50.0.2
+    ens19:
+      dhcp4: false
+      addresses: [192.168.80.50/24]
+      # For locally attached IPTV receivers, route multicast to this NIC.
+      # The 192.168.80.2 VOD gateway need not be another default gateway.
+      routes:
+        - to: 239.80.0.0/16
+          scope: link

@@ -1,0 +1,22 @@
+{
+  "management": {
+    "interface": "ens18",
+    "port": 3000
+  },
+  "streaming": {
+    "interface": "ens19",
+    "multicastCIDR": "239.80.0.0/16",
+    "defaultTTL": 1,
+    "packetSize": 1316,
+    "verifyEgressRoute": true
+  },
+  "storage": {
+    "dataDirectory": "./data",
+    "importDirectory": "./imports",
+    "maxUploadGB": 8
+  },
+  "tools": {
+    "ffmpeg": "ffmpeg",
+    "ffprobe": "ffprobe"
+  }
+}

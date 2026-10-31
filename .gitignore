@@ -1,0 +1,10 @@
+node_modules/
+server/dist/
+web/dist/
+data/
+imports/*
+!imports/.gitkeep
+.env
+config/streamer.json
+*.log
+.DS_Store

@@ -1,0 +1,6 @@
+{
+  "management": {"interface": "lo", "port": 3000},
+  "streaming": {"interface": "lo", "multicastCIDR": "239.80.0.0/16", "defaultTTL": 1, "packetSize": 1316, "verifyEgressRoute": true},
+  "storage": {"dataDirectory": "./data", "importDirectory": "./imports", "maxUploadGB": 2},
+  "tools": {"ffmpeg": "ffmpeg", "ffprobe": "ffprobe"}
+}
