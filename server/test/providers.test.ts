@@ -34,3 +34,27 @@ test('DRM-marked channels are skipped, while ordinary HLS source entries are ret
   const list=parseM3u('#EXTM3U\n#EXTINF:-1,DRM\n#KODIPROP:inputstream.adaptive.license_key=https://x.example/key\nhttps://example.org/protected.mpd\n#EXTINF:-1 group-title="News",News\nhttps://example.org/news/index.m3u8','https://example.org/list.m3u')
   assert.deepEqual(list.map(ch=>ch.name),['News'])
 })
+
+test('Hilay-style M3U catalog survives unrelated HLS directives and keeps live URL headers',()=>{
+  const playlist = [
+    '#EXTM3U url-tvg="https://epg.pw/xmltv/epg.xml"',
+    '# Hilay TV secondary EPG merged into playlist header',
+    '#EXT-X-VERSION:3',
+    '#EXTINF:-1 tvg-chno="1" tvg-name="Hilay TV Info" group-title="info",Hilay TV Info',
+    'https://embed.example/live.m3u8',
+    '#EXTINF:-1 tvg-id="TVMaldives.mv" group-title="HilayTV | Dhivehi",Television Maldives (PSM)',
+    'https://lana.psm.mv/live/tvm.m3u8|User-Agent=Mozilla%2F5.0&Referer=https%3A%2F%2Fpsm.mv%2F',
+  ].join('\n')
+  const channels = parseM3u(playlist,'https://hilaytv.xyz/play.m3u')
+  assert.equal(channels.length,2)
+  assert.equal(channels[0]?.name,'Hilay TV Info')
+  assert.equal(channels[1]?.group,'HilayTV | Dhivehi')
+  assert.equal(channels[1]?.url,'https://lana.psm.mv/live/tvm.m3u8')
+  assert.equal(channels[1]?.userAgent,'Mozilla/5.0')
+  assert.equal(channels[1]?.referer,'https://psm.mv/')
+})
+
+test('HLS master manifest must not be imported as an IPTV catalog',()=>{
+  const manifest='#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1280000\nhttps://example.org/video/720p.m3u8'
+  assert.throws(()=>parseM3u(manifest,'https://example.org/master.m3u8'),/HLS manifest/)
+})

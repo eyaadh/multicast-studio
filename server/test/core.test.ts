@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { inCIDR, assertMulticast } from '../src/network.ts'
 import { ffmpegArguments, parseProgressBlock } from '../src/ffmpeg.ts'
 import { cleanName } from '../src/media.ts'
+import { outputStallTimeout, summarizeFFmpegError } from '../src/supervisor.ts'
 import { parseM3u, parseJsonCatalog, validateHttpUrl } from '../src/providers.ts'
 import type { Channel, Media } from '../src/types.ts'
 
@@ -62,4 +63,25 @@ test('JSON provider channel directory parsing and URL safeguards',()=>{
   assert.equal(items[0]?.url,'https://example.org/live.m3u8')
   assert.throws(()=>validateHttpUrl('file:///etc/passwd'))
   assert.throws(()=>validateHttpUrl('https://password:secret@example.org/live.m3u8'))
+})
+
+test('live channel watchdog tolerates HLS buffering more than local files',()=>{
+  assert.equal(outputStallTimeout({...channel,sourceType:'live'},'starting'),150000)
+  assert.equal(outputStallTimeout({...channel,sourceType:'live'},'streaming'),90000)
+  assert.equal(outputStallTimeout(channel,'streaming'),35000)
+})
+test('safe FFmpeg errors do not leak signed URLs or request credentials',()=>{
+  const error='https://stream.example/index.m3u8?token=private: Server returned 403 Forbidden\nAuthorization: Bearer secret-token'
+  assert.equal(summarizeFFmpegError(error),'Server returned 403')
+  assert.equal(summarizeFFmpegError('Unexpected request error for https://x.example/a?token=private'),null)
+})
+test('live MPEG-2 uses bounded encoding threads and SD-compatible settings',()=>{
+  const live={...channel,sourceType:'live' as const,mediaId:null,profile:'mpeg2' as const,
+    width:720,height:576,fps:25,videoBitrateKbps:3500,audioBitrateKbps:192}
+  const args=ffmpegArguments(live,{key:'one',name:'Live',group:'',logo:null,url:'https://example.org/live.m3u8'})
+  assert.equal(args[args.indexOf('-filter_threads')+1],'1')
+  assert.equal(args[args.indexOf('-threads')+1],'2')
+  assert.equal(args[args.indexOf('-bf')+1],'0')
+  assert.equal(args[args.indexOf('-c:v')+1],'mpeg2video')
+  assert.equal(args[args.indexOf('-b:v')+1],'3500k')
 })

@@ -107,7 +107,12 @@ function channelKey(id:string,index:number,name:string,group:string):string {
 export function parseM3u(text:string, baseUrl:string): ProviderChannel[] {
   const lines=text.replace(/^\uFEFF/,'').split(/\r?\n/)
   if(!lines[0]?.trim().startsWith('#EXTM3U'))throw new Error('This URL did not return an extended M3U channel list')
-  if(lines.some(line=>line.startsWith('#EXT-X-')))throw new Error('This is an HLS manifest, not a provider catalog. Add it as a direct live channel instead.')
+  // A provider catalog can contain stray HLS directives. Distinguish the playlist
+  // by its IPTV channel records rather than rejecting on any #EXT-X- line.
+  // HLS media/variant manifests do not use negative EXTINF channel durations.
+  const hasIptvEntries = lines.some(line => /^#EXTINF:\s*-\d+(?=[\s,])/i.test(line.trim()))
+  if (!hasIptvEntries && lines.some(line => line.trimStart().startsWith('#EXT-X-')))
+    throw new Error('This is an HLS manifest, not a provider catalog. Add it as a direct live channel instead.')
   const entries:ProviderChannel[]=[]
   const seen=new Set<string>()
   const duplicateNames=new Map<string,number>()

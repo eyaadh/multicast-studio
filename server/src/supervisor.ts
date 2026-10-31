@@ -11,18 +11,62 @@ interface RunningState {
   startedAt: string | null; lastProgressAt: number; progress: Progress; restarts: number;
   failures: number; lastError: string | null; stopRequested: boolean;
   retryTimer: ReturnType<typeof setTimeout> | null; stderr: string; runId: number;
+  terminationReason: string | null; terminationTimer: ReturnType<typeof setTimeout> | null;
 }
 const states = new Map<string, RunningState>()
 let isShuttingDown = false
+// Do not copy FFmpeg stderr into logs verbatim: it may contain upstream tokens.
+export function summarizeFFmpegError(stderr: string): string | null {
+  const known = [
+    /HTTP error (\d{3})/i,
+    /Server returned (\d{3})/i,
+    /Connection timed out/i,
+    /Connection refused/i,
+    /End of file/i,
+    /Invalid data found when processing input/i,
+    /Error opening input/i,
+    /Error while decoding stream/i,
+    /Conversion failed/i,
+    /No such file or directory/i,
+  ]
+  for (const pattern of known) {
+    const match = stderr.match(pattern)
+    if (match) return match[0]
+  }
+  return null
+}
+// HLS sources may pause while fetching the next segment or establishing a connection.
+// Do not treat a 35-second pause as proof that a live feed has failed.
+export function outputStallTimeout(channel: Channel, status: ChannelStatus): number {
+  if (channel.sourceType === 'live') return status === 'starting' ? 150000 : 90000
+  return status === 'starting' ? 60000 : 35000
+}
+function terminateStalledProcess(id: string, s: RunningState, reason: string) {
+  const child = s.process
+  if (!child || s.terminationReason) return // Avoid repeatedly killing the same process.
+  s.terminationReason = reason
+  s.lastError = reason
+  console.error(`[channel ${id}] ${reason}; last output speed=${s.progress.speed ?? 'unknown'}, fps=${s.progress.fps ?? 'unknown'}; requesting a graceful FFmpeg exit`)
+  child.kill('SIGTERM')
+  // FFmpeg occasionally gets stuck in a network read. Force-stop only if necessary.
+  s.terminationTimer = setTimeout(() => {
+    if (s.process === child) {
+      console.error(`[channel ${id}] FFmpeg did not terminate after SIGTERM; forcing SIGKILL`)
+      child.kill('SIGKILL')
+    }
+  }, 8000)
+  s.terminationTimer.unref()
+}
 const watchdog = setInterval(() => {
   if (isShuttingDown) return
   for (const [id, state] of states) {
-    if (!state.process || state.stopRequested) continue
-    const timeout = state.status === 'starting' ? 60000 : 35000
+    if (!state.process || state.stopRequested || state.terminationReason) continue
+    const channel = getChannel(id)
+    if (!channel) continue
+    const timeout = outputStallTimeout(channel, state.status)
     if (Date.now() - state.lastProgressAt > timeout) {
-      state.lastError = `FFmpeg stopped reporting progress for ${Math.round(timeout / 1000)} seconds`
-      state.process.kill('SIGKILL')
-      console.error(`[channel ${id}] ${state.lastError}`)
+      terminateStalledProcess(id, state,
+        `FFmpeg output stalled for ${Math.round(timeout / 1000)} seconds (${channel.sourceType} source)`)
     }
   }
 }, 5000)
@@ -38,7 +82,8 @@ const egressGuard = setInterval(async () => {
       const route = await checkRoute(ch.groupIp)
       if (!route.ok && s.process && !s.stopRequested) {
         s.lastError = route.message
-        console.error(`[channel ${ch.id}] Route guard: ${route.message}; terminating FFmpeg`)
+        s.terminationReason = `Multicast egress route changed: ${route.message}`
+        console.error(`[channel ${ch.id}] Route guard: ${route.message}; terminating FFmpeg immediately`)
         s.process.kill('SIGKILL')
       }
     }
@@ -50,7 +95,7 @@ function stateFor(id: string): RunningState {
   let s = states.get(id)
   if (!s) {
     s = {status:'stopped',process:null,pid:null,startedAt:null,lastProgressAt:0,
-      progress:{},restarts:0,failures:0,lastError:null,stopRequested:false,retryTimer:null,stderr:'',runId:0}
+      progress:{},restarts:0,failures:0,lastError:null,stopRequested:false,retryTimer:null,stderr:'',runId:0,terminationReason:null,terminationTimer:null}
     states.set(id,s)
   }
   return s
@@ -119,8 +164,11 @@ export async function startChannel(id: string, recovering = false): Promise<Chan
     s.startedAt=new Date().toISOString()
     s.lastProgressAt=Date.now()
     s.progress={}
-    s.lastError=null
+    // Preserve a failure reason until the new process produces actual output.
     s.stderr=''
+    s.terminationReason=null
+    if (s.terminationTimer) clearTimeout(s.terminationTimer)
+    s.terminationTimer=null
     let buffered=''
     child.stdout.on('data',(chunk:Buffer)=>{
       if(runId!==s.runId)return
@@ -141,6 +189,7 @@ export async function startChannel(id: string, recovering = false): Promise<Chan
         // Only advancing output counts as a healthy broadcast.
         if(advanced){
           s.lastProgressAt=Date.now()
+          s.lastError=null
           if(s.status==='starting'||s.status==='recovering')s.status='streaming'
           if(Date.now()-new Date(s.startedAt||0).getTime()>120000)s.failures=0
         }
@@ -151,10 +200,16 @@ export async function startChannel(id: string, recovering = false): Promise<Chan
     const exit=(code:number|null,signal:string|null,error?:Error)=>{
       if(handled || runId!==s.runId)return
       handled=true;s.process=null;s.pid=null
+      if (s.terminationTimer) clearTimeout(s.terminationTimer)
+      s.terminationTimer=null
+      const reason=s.terminationReason
+      s.terminationReason=null
       if(s.stopRequested||isShuttingDown){s.status='stopped';return}
-      const tail=s.stderr.trim()
-      // FFmpeg logs may contain signed upstream URLs; do not expose the log tail.
-      s.lastError=error?.message || `FFmpeg exited (${code??signal??'unknown'})${tail?' — inspect server logs for details':''}`
+      // FFmpeg may print signed source URLs and authorization headers to stderr.
+      // Summarize only safe, recognizable conditions rather than logging raw output.
+      const diagnostic=summarizeFFmpegError(s.stderr)
+      s.lastError=reason || error?.message ||
+        `FFmpeg exited (${signal ?? code ?? 'unknown'})${diagnostic ? `: ${diagnostic}` : ''}`
       console.error(`[channel ${id}] ${s.lastError}`)
       queueRecovery(id,channel,s)
     }
@@ -178,6 +233,9 @@ export async function stopChannel(id: string): Promise<ChannelSnapshot> {
   ++s.runId
   clearRetry(s)
   s.failures = 0
+  if (s.terminationTimer) clearTimeout(s.terminationTimer)
+  s.terminationTimer=null
+  s.terminationReason=null
   const child = s.process
   if (!child) { s.status = 'stopped'; s.pid=null;return snapshot(channel) }
   s.status = 'stopping'
@@ -210,4 +268,11 @@ export async function shutdown() {
   clearInterval(egressGuard)
   await Promise.all(listChannels().filter(c => running(c.id)).map(c => stopChannel(c.id).catch(console.error)))
 }
-export function forgetChannel(id: string) { const s = states.get(id); if (s) clearRetry(s); states.delete(id) }
+export function forgetChannel(id: string) {
+  const s = states.get(id)
+  if (s) {
+    clearRetry(s)
+    if (s.terminationTimer) clearTimeout(s.terminationTimer)
+  }
+  states.delete(id)
+}

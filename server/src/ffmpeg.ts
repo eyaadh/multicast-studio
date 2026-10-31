@@ -34,6 +34,8 @@ export function ffmpegArguments(ch: Channel, source: Media | ProviderChannel): s
       '-i',(source as ProviderChannel).url]
     : ['-re','-stream_loop','-1','-i',(source as Media).storedPath]
   const base = ['-hide_banner','-nostdin','-loglevel','warning','-stats_period','2',
+    // Limit video filter parallelism when converting a live feed on a small VM.
+    ...(isLive && ch.profile === 'mpeg2' ? ['-filter_threads','1'] : []),
     '-progress','pipe:1',...inputArgs,'-map','0:v:0','-map','0:a:0?','-sn','-dn']
   let codecArgs: string[]
   if (ch.profile === 'copy') {
@@ -43,6 +45,7 @@ export function ffmpegArguments(ch: Channel, source: Media | ProviderChannel): s
     const audio = ch.profile === 'h264' ? 'aac' : 'mp2'
     const vf = `scale=${ch.width}:${ch.height}:force_original_aspect_ratio=decrease,pad=${ch.width}:${ch.height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${ch.fps},format=yuv420p`
     codecArgs = ['-vf',vf,'-c:v',codec,
+      ...(ch.profile === 'mpeg2' ? ['-threads','2','-bf','0'] : []),
       ...(ch.profile === 'h264' ? ['-preset','veryfast','-tune','zerolatency'] : []),
       '-b:v',`${ch.videoBitrateKbps}k`,'-maxrate',`${ch.videoBitrateKbps}k`,
       '-bufsize',`${ch.videoBitrateKbps * 2}k`,'-g',String(ch.fps * 2),
