@@ -270,3 +270,18 @@ sudo journalctl -u multicast-studio -f
 ```
 
 If you use a different systemd service name or run the server manually, adjust those commands accordingly. Check CPU utilization when transcoding internet streams to legacy MPEG-4; direct copy should only be used if the receiver supports the input codecs.
+
+## Cricfy Kodi provider discovery (optional)
+
+This integration is an **opt-in** connector using the released Kodi add-on's provider discovery protocol. It does not require installing Kodi or Python. Existing local-video loops, generic M3U/JSON providers, and your office/IPTV network isolation are unchanged.
+
+1. Install `unzip` on Ubuntu: `sudo apt install unzip`.
+2. Sign in to Multicast Studio and open **Live Providers → Cricfy Kodi — Provider discovery**.
+3. Click **Connect official Kodi release**. This retrieves the newest **built** add-on ZIP from the official GitHub repository; the GitHub *source* ZIP cannot be used because generated add-on properties are absent. Alternatively, download the built Kodi ZIP from [official Releases](https://github.com/itsyourap/cricfy-kodi-plugin/releases) and import it using **Import built add-on ZIP**.
+4. Click **Discover providers** to load the directory from Cricfy's configured upstream endpoints.
+5. Choose the provider groups you want, select **Import selected providers**, and then browse the channels as with any other configured provider.
+6. Click **Add** next to a supported channel. It becomes a normal live-source multicast channel with auto-reconnect and refreshed upstream URL resolution. Existing local video channels are unaffected.
+
+**No list of Cricfy streams is present in the source repository**, and the connector can only discover the live directory if Cricfy's own remote services and published release configuration continue to work. Live provider channels can disappear or change. DRM-protected entries are not eligible for FFmpeg multicast output.
+
+The connector's HTTP calls are bound to the **management/office NIC** and require public IPv4 DNS routes through that NIC; MPEG-TS multicast is still transmitted through the configured VOD/IPTV NIC. Do not configure two competing default routes. The official build may contain authentication/configuration material: keep `data/cricfy-addon-config.json` private; do not commit it to Git or expose it through your reverse proxy. See `THIRD_PARTY_NOTICES.md` for upstream license details.

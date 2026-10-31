@@ -26,6 +26,11 @@ export function ffmpegArguments(ch: Channel, source: Media | ProviderChannel): s
       '-rw_timeout','15000000',
       ...('userAgent' in source && source.userAgent ? ['-user_agent',source.userAgent] : []),
       ...('referer' in source && source.referer ? ['-referer',source.referer] : []),
+      ...('cookie' in source && source.cookie || 'headers' in source && source.headers && Object.keys(source.headers).length ?
+        ['-headers',[...('cookie' in source && source.cookie ? [`Cookie: ${source.cookie}\r\n`] : []),
+          ...('headers' in source && source.headers ? Object.entries(source.headers)
+            .filter(([key])=>/^[a-z0-9-]{1,40}$/i.test(key))
+            .map(([key,value])=>`${key}: ${value.replace(/[\r\n]/g,'')}\r\n`) : [])].join('')] : []),
       '-i',(source as ProviderChannel).url]
     : ['-re','-stream_loop','-1','-i',(source as Media).storedPath]
   const base = ['-hide_banner','-nostdin','-loglevel','warning','-stats_period','2',

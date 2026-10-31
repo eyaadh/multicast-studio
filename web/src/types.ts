@@ -1,5 +1,5 @@
 export type SourceType = 'media' | 'live'
-export type Provider = {id:string;name:string;kind:'m3u'|'json';url:string;createdAt:string}
+export type Provider = {id:string;name:string;kind:'m3u'|'json'|'cricfy';url:string;createdAt:string}
 export type ProviderChannel = {key:string;name:string;group:string;logo:string|null}
 export type Profile = 'h264'|'mpeg4'|'mpeg2'|'copy'
 export type Status = 'stopped'|'starting'|'streaming'|'stopping'|'recovering'|'error'
@@ -17,3 +17,6 @@ export type SystemInfo = {
  host:{uptimeSeconds:number;memoryTotal:number;memoryFree:number;loadAverage:number[];cpuCount:number}
 }
 export type RouteCheck = {ok:boolean;dev:string|null;source:string;message:string}
+
+export type CricfyStatus = {connected:boolean;release:string|null;installedAt:string|null}
+export type CricfyDirectoryItem = {key:string;name:string;image:string|null}

@@ -4,7 +4,7 @@ import { Activity, ArrowDownToLine, Check, CircleAlert, Clapperboard, Cpu, Datab
   HardDrive, Info, Layers3, LogOut, MonitorCog, Network, Pencil, Play, Plus, Radio,
   RefreshCcw, RotateCw, Settings2, ShieldCheck, Square, Trash2, UploadCloud, Wifi, X } from 'lucide-vue-next'
 import { api, ApiError, jsonBody, uploadRaw } from './api'
-import type { Channel, ChannelForm, Media, Profile, RouteCheck, SystemInfo, Provider, ProviderChannel } from './types'
+import type { Channel, ChannelForm, Media, Profile, RouteCheck, SystemInfo, Provider, ProviderChannel, CricfyStatus, CricfyDirectoryItem } from './types'
 
 type Tab='channels'|'providers'|'media'|'system'
 const activeTab=ref<Tab>('channels')
@@ -14,6 +14,10 @@ const channels=ref<Channel[]>([]),media=ref<Media[]>([]),system=ref<SystemInfo|n
 const providers=ref<Provider[]>([]),providerChannels=ref<ProviderChannel[]>([])
 const selectedProviderId=ref(''),providerLoading=ref(false),providerSaving=ref(false)
 const providerName=ref(''),providerKind=ref<'m3u'|'json'>('m3u'),providerUrl=ref('')
+const cricfy=ref<CricfyStatus|null>(null)
+const cricfyDirectory=ref<CricfyDirectoryItem[]>([]),cricfyLoading=ref(false),cricfyConnecting=ref(false)
+const cricfySearch=ref(''),cricfySelected=ref<string[]>([]),cricfyImporting=ref(false)
+const filteredCricfy=computed(()=>cricfyDirectory.value.filter(p=>p.name.toLowerCase().includes(cricfySearch.value.toLowerCase())))
 const channelSearch=ref('')
 const filteredProviderChannels=computed(()=>providerChannels.value.filter(ch=>
   `${ch.name} ${ch.group}`.toLowerCase().includes(channelSearch.value.trim().toLowerCase())))
@@ -150,6 +154,50 @@ async function checkRoutes(){
     if(!channels.value.length)notice('Create a channel to verify its multicast egress route')
   }catch(error){showError(error)}finally{routeLoading.value=false}
 }
+async function loadCricfyStatus(){
+  try{cricfy.value=await api<CricfyStatus>('/cricfy/status')}catch(error){showError(error)}
+}
+async function connectCricfy(){
+  cricfyConnecting.value=true
+  try{
+    await api('/cricfy/connect',{method:'POST'})
+    await loadCricfyStatus()
+    notice('Cricfy add-on configured. Discover the provider directory next.')
+    await discoverCricfy()
+  }catch(error){showError(error)}finally{cricfyConnecting.value=false}
+}
+async function uploadCricfy(event:Event){
+  const input=event.target as HTMLInputElement
+  const file=input.files?.[0]
+  input.value=''
+  if(!file)return
+  cricfyConnecting.value=true
+  try{
+    if(file.size>20_000_000)throw new Error('Kodi add-on ZIP exceeds 20 MB')
+    await api('/cricfy/addon',{method:'POST',headers:{'Content-Type':'application/zip'},body:file})
+    await loadCricfyStatus()
+    notice('Kodi add-on loaded')
+    await discoverCricfy()
+  }catch(error){showError(error)}finally{cricfyConnecting.value=false}
+}
+async function discoverCricfy(){
+  cricfyLoading.value=true
+  try{cricfyDirectory.value=await api<CricfyDirectoryItem[]>('/cricfy/directory');cricfySelected.value=[]}
+  catch(error){showError(error)}finally{cricfyLoading.value=false}
+}
+async function importCricfy(){
+  if(!cricfySelected.value.length)return
+  cricfyImporting.value=true
+  try{
+    const result=await api<{count:number}>('/cricfy/import',{method:'POST',body:jsonBody({keys:cricfySelected.value})})
+    notice(`${result.count} Cricfy providers imported`)
+    cricfySelected.value=[]
+    await refresh()
+  }catch(error){showError(error)}finally{cricfyImporting.value=false}
+}
+function toggleCricfy(key:string){
+  cricfySelected.value=cricfySelected.value.includes(key)?cricfySelected.value.filter(k=>k!==key):[...cricfySelected.value,key]
+}
 async function browseProvider(id:string){
   selectedProviderId.value=id;providerChannels.value=[];providerLoading.value=true
   try{providerChannels.value=await api<ProviderChannel[]>(`/providers/${id}/channels`)}
@@ -185,7 +233,7 @@ function switchSourceType(){
   currentForm.value.providerId=null;currentForm.value.providerChannelKey=null;currentForm.value.streamUrl=null
   currentForm.value.mediaId=currentForm.value.sourceType==='media'?media.value[0]?.id||null:null
 }
-watch(activeTab, tab=>{if(tab==='media' && authenticated.value)void refreshCandidates()})
+watch(activeTab, tab=>{if(tab==='media' && authenticated.value)void refreshCandidates();if(tab==='providers' && authenticated.value)void loadCricfyStatus()})
 onMounted(async()=>{
   try{const state=await api<{authenticated:boolean}>('/auth/session');authenticated.value=state.authenticated
     if(authenticated.value){await refresh();startEvents()}}
@@ -245,6 +293,29 @@ onUnmounted(()=>{stopEvents();if(toastTimer)clearTimeout(toastTimer)})
             <div class="flex items-start gap-3 text-xs muted bg-indigo-500/5 border border-indigo-400/15 rounded-xl p-4"><Info :size="16" class="shrink-0 text-indigo-300"/><p>Channels broadcast continuously whether receivers are connected or not. Video previews display the source file—not a verification of actual multicast reception. Playback starts at the current broadcast position for new viewers.</p></div>
           </template>
           <template v-else-if="activeTab==='providers'">
+            <div class="panel p-5 space-y-4">
+              <div class="flex flex-wrap gap-3 items-center justify-between">
+                <div><h3 class="font-semibold">Cricfy Kodi — Provider discovery</h3><p class="text-xs muted mt-1">Uses the official built Kodi add-on release to discover its provider directory. DRM-protected channels are excluded.</p></div>
+                <span class="text-xs" :class="cricfy?.connected?'text-emerald-300':'text-amber-300'">{{cricfy?.connected ? `Connected · ${cricfy.release}` : 'Not configured'}}</span>
+              </div>
+              <div class="flex flex-wrap gap-2 items-center">
+                <button class="btn btn-primary" :disabled="cricfyConnecting" @click="connectCricfy"><RefreshCcw :size="15"/>{{cricfyConnecting?'Connecting…':cricfy?.connected?'Update Kodi add-on':'Connect official Kodi release'}}</button>
+                <label class="btn cursor-pointer"><UploadCloud :size="15"/> Import built add-on ZIP<input class="hidden" type="file" accept=".zip,application/zip" :disabled="cricfyConnecting" @change="uploadCricfy"/></label>
+                <button class="btn" :disabled="!cricfy?.connected||cricfyLoading" @click="discoverCricfy"><Wifi :size="15"/>{{cricfyLoading?'Discovering…':'Discover providers'}}</button>
+              </div>
+              <p class="text-xs muted">The GitHub source-code ZIP does not contain the generated configuration files. The official built add-on from Releases is required. Internet requests use your office NIC; multicast remains on the IPTV NIC.</p>
+              <template v-if="cricfyDirectory.length">
+                <div class="flex flex-wrap justify-between gap-2"><p class="text-xs muted">{{cricfyDirectory.length}} providers discovered · {{cricfySelected.length}} selected</p><input v-model="cricfySearch" class="field max-w-xs" placeholder="Search providers"/></div>
+                <div class="max-h-80 overflow-y-auto grid grid-cols-1 md:grid-cols-2 gap-2">
+                  <button v-for="entry in filteredCricfy" :key="entry.key" class="flex items-center gap-3 rounded-lg border p-3 text-left" :class="cricfySelected.includes(entry.key)?'border-indigo-400 bg-indigo-500/10':'border-[#2d3a54]'" @click="toggleCricfy(entry.key)">
+                    <img v-if="entry.image" :src="entry.image" alt="" class="w-9 h-9 object-contain rounded" referrerpolicy="no-referrer"/>
+                    <span class="min-w-0 flex-1 text-sm truncate">{{entry.name}}</span>
+                    <Check v-if="cricfySelected.includes(entry.key)" :size="17" class="text-indigo-300"/>
+                  </button>
+                </div>
+                <button class="btn btn-primary" :disabled="cricfyImporting||!cricfySelected.length" @click="importCricfy"><Plus :size="15"/>{{cricfyImporting?'Importing…':`Import ${cricfySelected.length} selected providers`}}</button>
+              </template>
+            </div>
             <div><h2 class="text-2xl font-semibold">Live stream providers</h2><p class="text-sm muted mt-2">Register an authorized M3U or JSON catalog, browse channels, and assign them to multicast output. Feeds are resolved again whenever a channel reconnects.</p></div>
             <div class="grid grid-cols-1 xl:grid-cols-[340px_1fr] gap-5 items-start">
               <div class="space-y-5">

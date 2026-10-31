@@ -10,8 +10,8 @@ import { managementIP, config } from './config.js'
 import { getProvider } from './db.js'
 
 const execFileAsync = promisify(execFile)
-export type Provider = {id:string;name:string;kind:'m3u'|'json';url:string;createdAt:string}
-export type ProviderChannel = {key:string;name:string;group:string;logo:string|null;url:string;userAgent?:string;referer?:string}
+export type Provider = {id:string;name:string;kind:'m3u'|'json'|'cricfy';url:string;createdAt:string}
+export type ProviderChannel = {key:string;name:string;group:string;logo:string|null;url:string;userAgent?:string;referer?:string;cookie?:string;headers?:Record<string,string>}
 export type PublicProviderChannel = Omit<ProviderChannel,'url'|'userAgent'|'referer'>
 
 export function validateHttpUrl(text: string): URL {
@@ -49,19 +49,19 @@ export async function verifyOfficeInput(text:string): Promise<{url:URL;ip:string
   return {url,ip}
 }
 
-export async function fetchCatalogText(text:string, hops=0):Promise<string> {
+export async function fetchCatalogText(text:string, hops=0, extraHeaders:Record<string,string>={}):Promise<string> {
   if(hops>3)throw new Error('Too many catalog redirects')
   const {url,ip}=await verifyOfficeInput(text)
   return new Promise<string>((resolve,reject)=>{
     const fn=url.protocol==='https:'?httpsRequest:httpRequest
     const req=fn(url,{method:'GET',localAddress:managementIP,
       lookup:(_hostname,_opts,cb)=>cb(null,ip,4),
-      headers:{'user-agent':'MulticastStudio/1.1','accept':'application/json, application/x-mpegurl, text/plain, */*'},
+      headers:{'user-agent':'MulticastStudio/1.1','accept':'application/json, application/x-mpegurl, text/plain, */*',...extraHeaders},
       timeout:10000},res=>{
       const status=res.statusCode??0
       if([301,302,303,307,308].includes(status)&&res.headers.location){
         res.resume()
-        fetchCatalogText(new URL(res.headers.location,url).href,hops+1).then(resolve,reject)
+        fetchCatalogText(new URL(res.headers.location,url).href,hops+1,extraHeaders).then(resolve,reject)
         return
       }
       if(status!==200){res.resume();reject(new Error(`Provider returned HTTP ${status}`));return}
@@ -86,30 +86,61 @@ export function parseM3u(text:string, baseUrl:string): ProviderChannel[] {
   if(lines.some(line=>line.startsWith('#EXT-X-')))throw new Error('This is an HLS manifest, not a provider catalog. Add it as a direct live channel instead.')
   const entries:ProviderChannel[]=[]
   const duplicateNames=new Map<string,number>()
-  let attrs:Record<string,string>={},name='',agent='',referer=''
+  let attrs:Record<string,string>={},name='',agent='',referer='',cookie='',extras:Record<string,string>={},drm=false
+  const reset=()=>{attrs={};name='';agent='';referer='';cookie='';extras={};drm=false}
+  const headerValue=(value:string)=>value.replace(/[\r\n\0]/g,'').slice(0,1000)
   for(const line of lines.slice(1)){
     const value=line.trim()
     if(value.startsWith('#EXTINF:')){
-      attrs={}
-      for(const [,key,v] of value.matchAll(/([\w-]+)="([^"]*)"/g))attrs[key!]=v!
+      const pendingDrm: boolean = drm && !name
+      reset()
+      drm=pendingDrm
+      for(const [,key,v] of value.matchAll(/([\w-]+)=(?:"([^"]*)"|([^,\s]+))/g))attrs[key!]=v||''
       name=cleanText(value.slice(value.lastIndexOf(',')+1))||cleanText(attrs['tvg-name']||'')
-      agent='';referer=''
-    } else if(value.startsWith('#EXTVLCOPT:http-user-agent='))agent=cleanText(value.slice('#EXTVLCOPT:http-user-agent='.length),300).replace(/[\r\n]/g,'')
-    else if(value.startsWith('#EXTVLCOPT:http-referrer='))referer=cleanText(value.slice('#EXTVLCOPT:http-referrer='.length),500).replace(/[\r\n]/g,'')
+    } else if(value.startsWith('#EXTVLCOPT:http-user-agent='))agent=headerValue(value.slice('#EXTVLCOPT:http-user-agent='.length))
+    else if(value.startsWith('#EXTVLCOPT:http-referrer='))referer=headerValue(value.slice('#EXTVLCOPT:http-referrer='.length))
+    else if(value.startsWith('#EXTHTTP:')){
+      try {
+        const info:unknown=JSON.parse(value.slice('#EXTHTTP:'.length))
+        if(info && typeof info==='object' && !Array.isArray(info)){
+          const data=info as Record<string,unknown>
+          for(const [key,entry] of Object.entries(data)){
+            if(typeof entry!=='string')continue
+            if(key.toLowerCase()==='cookie')cookie=headerValue(entry)
+            else if(key.toLowerCase()==='user-agent')agent=headerValue(entry)
+            else if(key.toLowerCase()==='referer')referer=headerValue(entry)
+          }
+        }
+      }catch{/* Ignore malformed optional metadata */}
+    } else if(value.startsWith('#KODIPROP:inputstream.adaptive.license_key=') ||
+      value.startsWith('#KODIPROP:inputstream.adaptive.drm') || value.startsWith('#EXT-X-KEY:'))drm=true
     else if(value && !value.startsWith('#')){
-      if(name && entries.length<3000){
+      if(name && !drm && entries.length<3000){
         try{
-          const url=validateHttpUrl(new URL(value,baseUrl).href).href
+          const divider=value.indexOf('|')
+          const rawUrl=divider===-1?value:value.slice(0,divider)
+          const url=validateHttpUrl(new URL(rawUrl,baseUrl).href).href
+          if(divider!==-1){
+            const params=new URLSearchParams(value.slice(divider+1))
+            for(const [key,entry] of params){
+              const val=headerValue(entry)
+              if(key.toLowerCase()==='user-agent')agent=val
+              else if(key.toLowerCase()==='referer' || key.toLowerCase()==='referrer')referer=val
+              else if(key.toLowerCase()==='cookie')cookie=val
+              else if(/^[a-z0-9-]{1,40}$/i.test(key))extras[key]=val
+            }
+          }
           const group=cleanText(attrs['group-title']||'General',80)
           const identity=`${group.toLowerCase()}\0${name.toLowerCase()}`
           const duplicate=duplicateNames.get(identity)||0
           duplicateNames.set(identity,duplicate+1)
           entries.push({key:channelKey(attrs['tvg-id']||'',duplicate,name,group),name,group,
             logo:attrs['tvg-logo']?.slice(0,500)||null,url,
-            ...(agent?{userAgent:agent}:{}),...(referer?{referer}: {})})
+            ...(agent?{userAgent:agent}:{}),...(referer?{referer}: {}),
+            ...(cookie?{cookie}:{}),...(Object.keys(extras).length?{headers:extras}:{})})
         }catch{/* Ignore unsupported/malformed playlist entries */}
       }
-      attrs={};name='';agent='';referer=''
+      reset()
     }
   }
   return entries
@@ -131,6 +162,22 @@ export function parseJsonCatalog(text:string,baseUrl:string):ProviderChannel[]{
   })
 }
 export async function getProviderChannels(provider:Provider):Promise<ProviderChannel[]> {
+  if(provider.kind==='cricfy') {
+    const {loadCricfyChannels,discoverCricfyProviders}=await import('./cricfy.js')
+    let playlistUrl=provider.url
+    try {
+      // Cricfy rotates provider catalog URLs as well as individual stream URLs.
+      // Prefer an exact URL match, falling back to provider title when the link changes.
+      const latest=await discoverCricfyProviders()
+      const current=latest.find(entry=>entry.url===provider.url) ||
+        latest.find(entry=>entry.name.toLowerCase()===provider.name.toLowerCase())
+      if(current)playlistUrl=current.url
+    }catch(error){
+      console.warn('[cricfy] Provider directory refresh failed; attempting saved playlist URL:',
+        error instanceof Error?error.message:error)
+    }
+    return loadCricfyChannels(playlistUrl)
+  }
   const text=await fetchCatalogText(provider.url)
   return provider.kind==='json'?parseJsonCatalog(text,provider.url):parseM3u(text,provider.url)
 }
