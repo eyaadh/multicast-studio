@@ -57,7 +57,7 @@ function stateFor(id: string): RunningState {
 }
 export function snapshot(ch: Channel): ChannelSnapshot {
   const s = stateFor(ch.id)
-  const media = getMedia(ch.mediaId)
+  const media = ch.mediaId ? getMedia(ch.mediaId) : null
   return {...ch, media:media ? mediaPublic(media) : null,
     sourceLabel:ch.sourceType==='live' ? (ch.providerId ? `${getProvider(ch.providerId)?.name||'Provider'} · Live` : 'Direct live stream') : media?.name ?? null,
     status:s.status,pid:s.pid,

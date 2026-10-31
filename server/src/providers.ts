@@ -22,7 +22,9 @@ export function validateHttpUrl(text: string): URL {
   return url
 }
 function privateIPv4(ip:string): boolean {
-  const [a,b,c]=ip.split('.').map(Number)
+  const octets = ip.split('.').map(Number)
+  if (octets.length !== 4 || octets.some(octet => !Number.isInteger(octet) || octet < 0 || octet > 255)) return true
+  const [a = 0, b = 0, c = 0] = octets
   return a===0 || a===10 || a===127 || (a===169&&b===254) || (a===172&&b>=16&&b<=31) ||
     (a===192&&b===168) || (a===100&&b>=64&&b<=127) || (a===192&&b===0&&c===0) ||
     (a===192&&b===0&&c===2) || (a===198&&[18,19,51].includes(b)) || (a===203&&b===0&&c===113) ||
