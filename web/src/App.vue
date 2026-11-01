@@ -233,6 +233,10 @@ async function previewProviderChannel(entry: ProviderChannel) {
     }
   }
 }
+function clearProviderSelection() {
+  currentForm.value.providerId = null
+  currentForm.value.providerChannelKey = null
+}
 function previewDirectStream() {
   const url = currentForm.value.streamUrl?.trim()
   if (!url) {
@@ -988,7 +992,9 @@ onUnmounted(() => {
                       {{
                         ch.bufferState === 'filling'
                           ? 'Buffering before broadcast'
-                          : 'Buffered live broadcast'
+                          : ch.bufferState === 'recovering'
+                            ? 'Reconnecting multicast output'
+                            : 'Buffered live broadcast'
                       }}
                       · {{ ch.bufferWindowSeconds?.toFixed(0) ?? '0' }}s cached
                     </p>
@@ -1733,16 +1739,13 @@ onUnmounted(() => {
                 v-if="currentForm.providerId"
                 type="button"
                 class="btn"
-                @click="
-                  currentForm.providerId = null
-                  currentForm.providerChannelKey = null
-                "
+                @click="clearProviderSelection"
               >
                 Switch to direct URL
               </button>
               <p class="text-xs muted">
-                Internet input uses the office NIC. Live channels prebuffer at least 20 seconds on
-                disk before multicasting through the IPTV NIC.
+                Internet input uses the management NIC. Live channels prebuffer at least 20 seconds
+                on disk before multicasting through the IPTV NIC.
               </p>
             </div>
             <div class="sm:col-span-2">

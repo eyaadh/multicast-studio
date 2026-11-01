@@ -30,6 +30,10 @@ interface RunningState {
   lastError: string | null
   stopRequested: boolean
   retryTimer: ReturnType<typeof setTimeout> | null
+  outputRetryTimer: ReturnType<typeof setTimeout> | null
+  outputFailures: number
+  outputStartedAt: number
+  outputStopping: boolean
   bufferTimer: ReturnType<typeof setInterval> | null
   bufferWindowSeconds: number
   cleanupPromise: Promise<void> | null
@@ -83,6 +87,10 @@ function stateFor(id: string): RunningState {
       lastError: null,
       stopRequested: false,
       retryTimer: null,
+      outputRetryTimer: null,
+      outputFailures: 0,
+      outputStartedAt: 0,
+      outputStopping: false,
       bufferTimer: null,
       bufferWindowSeconds: 0,
       cleanupPromise: null,
@@ -100,6 +108,10 @@ function stateFor(id: string): RunningState {
 function clearRetry(s: RunningState) {
   if (s.retryTimer) clearTimeout(s.retryTimer)
   s.retryTimer = null
+}
+function clearOutputRetry(s: RunningState) {
+  if (s.outputRetryTimer) clearTimeout(s.outputRetryTimer)
+  s.outputRetryTimer = null
 }
 function clearBufferTimer(s: RunningState) {
   if (s.bufferTimer) clearInterval(s.bufferTimer)
@@ -143,6 +155,20 @@ function terminateStalledProcess(id: string, s: RunningState, reason: string) {
   }, 8000)
   s.terminationTimer.unref()
 }
+/** A failed live HLS reader must not tear down the still-healthy downloader/buffer. */
+function terminateLiveOutput(id: string, s: RunningState, reason: string) {
+  if (!s.process || !s.ingest || s.outputStopping) return
+  s.outputStopping = true
+  s.lastError = reason
+  console.error(`[channel ${id}] ${reason}; restarting broadcaster only`)
+  const child = s.process
+  child.kill('SIGTERM')
+  clearTermination(s)
+  s.terminationTimer = setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+  }, 8000)
+  s.terminationTimer.unref()
+}
 const watchdog = setInterval(() => {
   if (isShuttingDown) return
   for (const [id, s] of states) {
@@ -163,7 +189,9 @@ const watchdog = setInterval(() => {
     } else if (s.ingest && now - s.lastIngestProgressAt > outputStallTimeout(channel, 'starting')) {
       terminateStalledProcess(id, s, 'Live downloader stopped producing segments')
     } else if (s.process && now - s.lastProgressAt > outputStallTimeout(channel, s.status)) {
-      terminateStalledProcess(id, s, 'FFmpeg multicast output stalled')
+      if (channel.sourceType === 'live' && s.ingest)
+        terminateLiveOutput(id, s, 'FFmpeg multicast output stalled')
+      else terminateStalledProcess(id, s, 'FFmpeg multicast output stalled')
     }
   }
 }, 5000)
@@ -208,7 +236,13 @@ export function snapshot(ch: Channel): ChannelSnapshot {
     restarts: s.restarts,
     lastError: s.lastError,
     bufferState:
-      ch.sourceType === 'live' && s.ingest ? (s.process ? 'broadcasting' : 'filling') : null,
+      ch.sourceType === 'live' && s.ingest
+        ? s.process
+          ? 'broadcasting'
+          : s.outputFailures > 0
+            ? 'recovering'
+            : 'filling'
+        : null,
     bufferWindowSeconds: ch.sourceType === 'live' && s.ingest ? s.bufferWindowSeconds : null,
   }
 }
@@ -222,6 +256,7 @@ export function running(id: string) {
     (!!s.process ||
       !!s.ingest ||
       !!s.retryTimer ||
+      !!s.outputRetryTimer ||
       s.status === 'starting' ||
       s.status === 'recovering')
   )
@@ -280,6 +315,8 @@ function trackProgress(
         s.progress = next
         if (advanced) {
           s.lastProgressAt = Date.now()
+          if (kind === 'output' && s.outputStartedAt && Date.now() - s.outputStartedAt > 120000)
+            s.outputFailures = 0
           s.lastError = null
           if (s.status === 'starting' || s.status === 'recovering') s.status = 'streaming'
           if (Date.now() - new Date(s.startedAt || 0).getTime() > 120000) s.failures = 0
@@ -310,6 +347,9 @@ export async function startChannel(id: string, recovering = false): Promise<Chan
   s.status = recovering ? 'recovering' : 'starting'
   const runId = ++s.runId
   s.lastProgressAt = Date.now()
+  clearOutputRetry(s)
+  s.outputFailures = 0
+  s.outputStopping = false
   let failureHandled = false
   const fail = (
     kind: 'ingest' | 'output',
@@ -320,6 +360,7 @@ export async function startChannel(id: string, recovering = false): Promise<Chan
     if (failureHandled || runId !== s.runId || s.stopRequested || isShuttingDown) return
     failureHandled = true
     clearBufferTimer(s)
+    clearOutputRetry(s)
     clearTermination(s)
     const diagnostic = summarizeFFmpegError(kind === 'ingest' ? s.ingestStderr : s.stderr)
     s.lastError =
@@ -334,6 +375,7 @@ export async function startChannel(id: string, recovering = false): Promise<Chan
     s.process = null
     s.pid = null
     s.bufferWindowSeconds = 0
+    s.outputStopping = false
     s.status = 'recovering'
     // Serialize cleanup with manual stop/start so old cleanup cannot delete new segments.
     s.cleanupPromise = (async () => {
@@ -390,26 +432,79 @@ export async function startChannel(id: string, recovering = false): Promise<Chan
       trackProgress(ingest, runId, s, 'ingest')
       ingest.on('error', (e) => fail('ingest', null, null, e))
       ingest.on('exit', (code, signal) => fail('ingest', code, signal))
-      // Wait until *completed* disk segments cover the prebuffer period.
-      // Do not block the HTTP start request for twenty seconds.
-      let checking = false
-      s.bufferTimer = setInterval(async () => {
-        if (checking || runId !== s.runId || s.stopRequested || failureHandled || s.process) return
-        checking = true
+      // Start/restart the broadcaster independently. A clean HLS EOF can occur
+      // when the local rolling manifest is temporarily unchanged. Restarting
+      // ingest as well would discard the prebuffer and produce a long UDP gap.
+      const scheduleOutput = (delayMs: number) => {
+        if (runId !== s.runId || s.stopRequested || failureHandled || !s.ingest) return
+        clearOutputRetry(s)
+        s.outputRetryTimer = setTimeout(() => {
+          s.outputRetryTimer = null
+          void attemptOutput()
+        }, delayMs)
+        s.outputRetryTimer.unref()
+      }
+      const outputExited = (code: number | null, signal: string | null, error?: Error) => {
+        if (runId !== s.runId || s.stopRequested || failureHandled || isShuttingDown) return
+        if (s.terminationReason || !s.ingest || !channel.autoRecover) {
+          fail('output', code, signal, error)
+          return
+        }
+        clearTermination(s)
+        s.outputStopping = false
+        s.process = null
+        s.pid = s.ingest.pid ?? null
+        s.progress = {}
+        s.status = 'recovering'
+        s.bufferStartedAt = Date.now()
+        // A reader that played for a while is not a rapid crash loop. Resume
+        // promptly so receivers see the shortest possible transport gap.
+        if (Date.now() - s.outputStartedAt >= 15000) s.outputFailures = 0
+        s.outputFailures++
+        s.restarts++
+        const diagnostic = summarizeFFmpegError(s.stderr)
+        s.lastError = `Multicast broadcaster exited (${signal ?? code ?? 'unknown'})${diagnostic ? `: ${diagnostic}` : ''}`
+        console.error(`[channel ${id}] ${s.lastError}; downloader retained; restarting broadcaster`)
+        // Avoid rapid respawn loops if a source is genuinely unplayable.
+        scheduleOutput(Math.min(15000, 1000 * 2 ** Math.min(s.outputFailures - 1, 4)))
+      }
+      let outputAttempting = false
+      const attemptOutput = async () => {
+        if (
+          outputAttempting ||
+          runId !== s.runId ||
+          s.stopRequested ||
+          failureHandled ||
+          s.process ||
+          !s.ingest
+        )
+          return
+        outputAttempting = true
         try {
           const seconds = await bufferedSeconds(id)
-          if (runId !== s.runId || s.stopRequested || failureHandled) return
+          if (runId !== s.runId || s.stopRequested || failureHandled || !s.ingest) return
           s.bufferWindowSeconds = seconds
-          if (seconds < LIVE_PREBUFFER_SECONDS) return
+          if (seconds < LIVE_PREBUFFER_SECONDS) {
+            scheduleOutput(1000)
+            return
+          }
           clearBufferTimer(s)
           const output = launchFFmpeg(channel, source, liveBufferPlaylist(id))
           s.process = output
           s.pid = output.pid ?? null
           s.lastProgressAt = Date.now()
+          s.outputStartedAt = Date.now()
+          s.stderr = ''
           console.info(`[channel ${id}] buffered ${seconds}s; multicast broadcast starting`)
           trackProgress(output, runId, s, 'output')
-          output.on('error', (e) => fail('output', null, null, e))
-          output.on('exit', (code, signal) => fail('output', code, signal))
+          let outputEnded = false
+          const onOutputEnd = (code: number | null, signal: string | null, error?: Error) => {
+            if (outputEnded) return
+            outputEnded = true
+            outputExited(code, signal, error)
+          }
+          output.once('error', (e) => onOutputEnd(null, null, e))
+          output.once('exit', (code, signal) => onOutputEnd(code, signal))
         } catch (error) {
           console.error(
             `[channel ${id}] buffer monitor failed:`,
@@ -422,8 +517,14 @@ export async function startChannel(id: string, recovering = false): Promise<Chan
             error instanceof Error ? error : new Error('Buffer monitor failed'),
           )
         } finally {
-          checking = false
+          outputAttempting = false
         }
+      }
+      // The initial prebuffer is polled until it is ready; later output-only
+      // restarts reuse the same ingest and disk segments.
+      s.bufferTimer = setInterval(() => {
+        if (s.process || s.outputRetryTimer || runId !== s.runId || s.stopRequested) return
+        void attemptOutput()
       }, 1000)
       s.bufferTimer.unref()
     }
@@ -445,8 +546,10 @@ export async function stopChannel(id: string): Promise<ChannelSnapshot> {
   s.stopRequested = true
   ++s.runId
   clearRetry(s)
+  clearOutputRetry(s)
   clearBufferTimer(s)
   clearTermination(s)
+  s.outputStopping = false
   s.failures = 0
   s.terminationReason = null
   const output = s.process,
@@ -490,6 +593,7 @@ export function forgetChannel(id: string) {
   const s = states.get(id)
   if (s) {
     clearRetry(s)
+    clearOutputRetry(s)
     clearBufferTimer(s)
     clearTermination(s)
   }

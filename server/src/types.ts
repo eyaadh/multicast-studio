@@ -58,6 +58,6 @@ export type ChannelSnapshot = Channel & {
   progress: Progress
   restarts: number
   lastError: string | null
-  bufferState: 'filling' | 'broadcasting' | null
+  bufferState: 'filling' | 'broadcasting' | 'recovering' | null
   bufferWindowSeconds: number | null
 }

@@ -336,6 +336,22 @@ The dashboard shows **Buffering before broadcast** until the startup buffer is r
 
 **Important:** This introduces approximately 20+ seconds of delay and can smooth short download variations; it does not guarantee uninterrupted multicast during prolonged upstream outages, stalled encoding, expiring source tokens, or playlist discontinuities. The broadcaster may still stall when cached segments run out. Automatic recovery restarts both processes and refills the buffer before transmitting again. A continuously broadcast fallback/test card is **not** included in this patch. For a diagnostic baseline, use **Direct Copy** to avoid expensive transcoding on a 2-vCPU VM; older MPEG-2-only receivers still require a compatible output profile.
 
+### Buffered live broadcaster recovery
+
+For live channels, the downloader and multicast broadcaster are supervised separately.
+If the local HLS reader exits (including a clean exit code `0`) or stalls while the
+upstream downloader is still running, the broadcaster is restarted from the
+**existing disk buffer** instead of deleting and re-downloading the buffer.
+The local HLS reader also tolerates temporarily unchanged manifests for longer.
+Live transport streams signal an initial discontinuity on restart to help receivers
+resynchronize. Local-file channels retain their existing supervision behavior.
+
+**Receiver continuity is best effort:** restarting an FFmpeg UDP output still creates
+a short gap and resets transport timestamps. Some VLC/STB clients can recover
+without manual intervention; others may stop. Guaranteeing uninterrupted output
+through longer upstream outages requires a persistent transport muxer and a
+compatible fallback video source, which are not implemented by this change.
+
 ### Searchable selectors and live preview
 
 The dashboard uses searchable Headless UI comboboxes for catalog format, provider group,

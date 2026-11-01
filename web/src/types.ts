@@ -59,7 +59,7 @@ export type Channel = ChannelForm & {
   }
   restarts: number
   lastError: string | null
-  bufferState: 'filling' | 'broadcasting' | null
+  bufferState: 'filling' | 'broadcasting' | 'recovering' | null
   bufferWindowSeconds: number | null
   createdAt: string
   updatedAt: string

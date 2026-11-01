@@ -203,3 +203,20 @@ test('buffer readiness counts completed segments, not just the manifest target d
   )
   assert.throws(() => liveBufferDirectory('../../escape'))
 })
+
+test('buffered live HLS waits for new segments and signals transport discontinuity on restart', () => {
+  const live = { ...channel, sourceType: 'live' as const, mediaId: null, profile: 'copy' as const }
+  const source = {
+    key: 'live',
+    name: 'Live',
+    group: '',
+    logo: null,
+    url: 'https://example.org/live.m3u8',
+  }
+  const args = ffmpegArguments(live, source, '/tmp/buffer/index.m3u8')
+  assert.equal(args[args.indexOf('-max_reload') + 1], '100000')
+  assert.equal(args[args.indexOf('-m3u8_hold_counters') + 1], '100000')
+  assert.equal(args[args.indexOf('-seg_max_retry') + 1], '3')
+  assert.equal(args[args.indexOf('-mpegts_flags') + 1], '+initial_discontinuity')
+  assert.equal(ffmpegArguments(channel, media).includes('-mpegts_flags'), false)
+})

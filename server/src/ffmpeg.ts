@@ -45,7 +45,21 @@ export function ffmpegArguments(
 ): string[] {
   const isLive = ch.sourceType === 'live'
   const inputArgs = bufferedPlaylist
-    ? ['-re', '-live_start_index', '-10', '-i', bufferedPlaylist]
+    ? [
+        '-re',
+        '-live_start_index',
+        '-10',
+        // Keep waiting for fresh local segments instead of treating a temporarily
+        // unchanged rolling HLS playlist as end-of-stream.
+        '-max_reload',
+        '100000',
+        '-m3u8_hold_counters',
+        '100000',
+        '-seg_max_retry',
+        '3',
+        '-i',
+        bufferedPlaylist,
+      ]
     : isLive
       ? ffmpegLiveInput(source as ProviderChannel)
       : ['-re', '-stream_loop', '-1', '-i', (source as Media).storedPath]
@@ -115,6 +129,10 @@ export function ffmpegArguments(
     '1',
     '-mpegts_original_network_id',
     '1',
+    // Signal a transport discontinuity after a live broadcaster restart so
+    // receivers can re-lock instead of interpreting reset continuity counters
+    // as packet corruption. Does not change local video playout.
+    ...(isLive ? ['-mpegts_flags', '+initial_discontinuity'] : []),
     '-f',
     'mpegts',
     '-flush_packets',
