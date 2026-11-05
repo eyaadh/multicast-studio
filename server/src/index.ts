@@ -19,6 +19,7 @@ import {
   mediaInUse,
   deleteMedia,
   saveChannel,
+  swapChannelDestinations,
   getChannel,
   listChannels,
   deleteChannel,
@@ -234,6 +235,46 @@ app.patch('/api/channels/:id', async (c) => {
     return c.json(snapshot(saveChannel(values, c.req.param('id'))))
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : String(e) }, 400)
+  }
+})
+// A controlled handover: stop both broadcasters, atomically swap destinations,
+// and restart only channels that were active. This is not gapless.
+let destinationSwapBusy = false
+app.post('/api/channels/swap-destinations', async (c) => {
+  if (destinationSwapBusy)
+    return c.json({ error: 'A destination swap is already in progress' }, 409)
+  const parsed = z
+    .object({ firstId: z.string().uuid(), secondId: z.string().uuid() })
+    .safeParse(await c.req.json().catch(() => null))
+  if (!parsed.success || parsed.data.firstId === parsed.data.secondId)
+    return c.json({ error: 'Choose two different channels' }, 400)
+  const { firstId, secondId } = parsed.data
+  if (!getChannel(firstId) || !getChannel(secondId))
+    return c.json({ error: 'Channel not found' }, 404)
+  destinationSwapBusy = true
+  const active = [firstId, secondId].filter((id) => running(id))
+  let swapped = false
+  try {
+    await Promise.all([stopChannel(firstId), stopChannel(secondId)])
+    swapChannelDestinations(firstId, secondId)
+    swapped = true
+    const failures: string[] = []
+    for (const id of active) {
+      try {
+        await startChannel(id)
+      } catch (error) {
+        failures.push(
+          `${getChannel(id)?.name}: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
+    }
+    return c.json({ ok: true, restarted: active.length, warnings: failures })
+  } catch (error) {
+    // If the DB swap failed, restore the original running channels.
+    if (!swapped) for (const id of active) await startChannel(id).catch(console.error)
+    return c.json({ error: error instanceof Error ? error.message : String(error) }, 409)
+  } finally {
+    destinationSwapBusy = false
   }
 })
 app.delete('/api/channels/:id', (c) => {

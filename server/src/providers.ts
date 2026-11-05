@@ -79,9 +79,21 @@ export async function verifyOfficeInput(text: string): Promise<{ url: URL; ip: s
     ? [{ address: url.hostname, family: isIP(url.hostname) }]
     : await lookup(url.hostname, { all: true, verbatim: true })
   const ipv4 = addresses.filter((v) => v.family === 4)
-  if (!ipv4.length || ipv4.some((v) => privateIPv4(v.address)))
+  const privateAllowed = config.upstream.allowedPrivateOrigins.includes(url.origin)
+  // Exceptions apply only to explicit IPv4 URLs, not DNS names (avoid DNS rebinding).
+  const trustedPrivate =
+    privateAllowed &&
+    isIP(url.hostname) === 4 &&
+    !url.hostname.startsWith('127.') &&
+    !url.hostname.startsWith('169.254.') &&
+    !url.hostname.startsWith('0.') &&
+    privateIPv4(url.hostname) &&
+    !url.hostname.startsWith('255.') &&
+    !url.hostname.startsWith('224.') &&
+    !url.hostname.startsWith('239.')
+  if (!ipv4.length || ipv4.some((v) => privateIPv4(v.address) && !trustedPrivate))
     throw new Error(
-      'Upstream must resolve to public IPv4 address(es); private addresses are blocked',
+      'Upstream must resolve to public IPv4 address(es), or use an explicitly allowed private IPv4 origin',
     )
   const ip = ipv4[0]!.address
   if (process.platform === 'linux') {

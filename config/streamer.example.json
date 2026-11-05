@@ -10,6 +10,7 @@
     "packetSize": 1316,
     "verifyEgressRoute": true
   },
+  "upstream": { "allowedPrivateOrigins": [] },
   "storage": {
     "dataDirectory": "./data",
     "importDirectory": "./imports",

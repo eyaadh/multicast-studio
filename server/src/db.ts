@@ -194,6 +194,44 @@ export function saveChannel(data: ChannelValues, id?: string): Channel {
   ).run({ ...channel, autoStart: +channel.autoStart, autoRecover: +channel.autoRecover })
   return channel
 }
+/** Atomically exchange multicast destinations without deleting either channel. */
+export function swapChannelDestinations(firstId: string, secondId: string): void {
+  if (firstId === secondId) throw new Error('Select two different channels')
+  db.transaction(() => {
+    const first = getChannel(firstId)
+    const second = getChannel(secondId)
+    if (!first || !second) throw new Error('Channel not found')
+    // SQLite UNIQUE(group_ip,port) is immediate; use a temporary unused destination
+    // within the transaction, then finish both updates before commit.
+    let temporaryPort = 65535
+    while (
+      db
+        .prepare('SELECT 1 FROM channels WHERE group_ip=? AND port=?')
+        .get(first.groupIp, temporaryPort)
+    ) {
+      temporaryPort--
+      if (temporaryPort < 1024) throw new Error('No temporary multicast port available')
+    }
+    const now = new Date().toISOString()
+    db.prepare('UPDATE channels SET port=?, updated_at=? WHERE id=?').run(
+      temporaryPort,
+      now,
+      firstId,
+    )
+    db.prepare('UPDATE channels SET group_ip=?,port=?,updated_at=? WHERE id=?').run(
+      first.groupIp,
+      first.port,
+      now,
+      secondId,
+    )
+    db.prepare('UPDATE channels SET group_ip=?,port=?,updated_at=? WHERE id=?').run(
+      second.groupIp,
+      second.port,
+      now,
+      firstId,
+    )
+  })()
+}
 export function deleteChannel(id: string): void {
   db.prepare('DELETE FROM channels WHERE id=?').run(id)
 }

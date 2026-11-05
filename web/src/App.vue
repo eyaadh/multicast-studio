@@ -21,6 +21,7 @@ import {
   Radio,
   ChevronRight,
   RefreshCcw,
+  ArrowLeftRight,
   RotateCw,
   Settings2,
   ShieldCheck,
@@ -409,6 +410,41 @@ async function action(channel: Channel, type: 'start' | 'stop' | 'restart') {
     await refresh()
   } finally {
     busyIds.value = busyIds.value.filter((id) => id !== channel.id)
+  }
+}
+const swapSource = ref<Channel | null>(null)
+const swapTargetId = ref('')
+const swapping = ref(false)
+function openSwap(channel: Channel) {
+  swapSource.value = channel
+  swapTargetId.value = ''
+}
+async function confirmSwap() {
+  if (!swapSource.value || !swapTargetId.value) return
+  const target = channels.value.find((ch) => ch.id === swapTargetId.value)
+  if (
+    !target ||
+    !window.confirm(
+      `Exchange multicast destinations between "${swapSource.value.name}" and "${target.name}"? Active channels will briefly stop and restart.`,
+    )
+  )
+    return
+  swapping.value = true
+  try {
+    const result = await api<{ ok: boolean; warnings: string[] }>('/channels/swap-destinations', {
+      method: 'POST',
+      body: jsonBody({ firstId: swapSource.value.id, secondId: target.id }),
+    })
+    swapSource.value = null
+    if (result.warnings.length)
+      notice(`Destinations swapped; restart warnings: ${result.warnings.join('; ')}`, 'error')
+    else notice('Multicast destinations swapped successfully')
+    await refresh()
+  } catch (error) {
+    showError(error)
+    await refresh()
+  } finally {
+    swapping.value = false
   }
 }
 function newChannel() {
@@ -942,6 +978,38 @@ onUnmounted(() => {
                 <p class="text-xs muted mt-1">Channels requiring attention</p>
               </div>
             </div>
+            <div v-if="swapSource" class="panel p-5 space-y-3 mb-4">
+              <div class="flex items-center justify-between gap-3">
+                <h3 class="font-semibold text-sm">Swap multicast destinations</h3>
+                <button class="btn btn-icon" title="Cancel" @click="swapSource = null">
+                  <X :size="16" />
+                </button>
+              </div>
+              <p class="text-sm muted">
+                {{ swapSource.name }} · {{ swapSource.groupIp }}:{{ swapSource.port }}. Select the
+                channel whose destination you want to exchange. Active channels will briefly
+                restart.
+              </p>
+              <div class="flex flex-wrap gap-2 items-center">
+                <select v-model="swapTargetId" class="field flex-1 min-w-48">
+                  <option value="" disabled>Select another channel</option>
+                  <option
+                    v-for="candidate in channels.filter((c) => c.id !== swapSource?.id)"
+                    :key="candidate.id"
+                    :value="candidate.id"
+                  >
+                    {{ candidate.name }} · {{ candidate.groupIp }}:{{ candidate.port }}
+                  </option>
+                </select>
+                <button
+                  class="btn btn-primary"
+                  :disabled="!swapTargetId || swapping"
+                  @click="confirmSwap"
+                >
+                  {{ swapping ? 'Swapping…' : 'Swap destinations' }}
+                </button>
+              </div>
+            </div>
             <div v-if="!channels.length" class="panel p-12 text-center">
               <Clapperboard
                 :size="38"
@@ -1043,6 +1111,13 @@ onUnmounted(() => {
                       @click="action(ch, 'restart')"
                     >
                       <RotateCw :size="15" /></button
+                    ><button
+                      class="btn btn-icon"
+                      title="Swap multicast destination"
+                      :disabled="busyIds.includes(ch.id) || swapping"
+                      @click="openSwap(ch)"
+                    >
+                      <ArrowLeftRight :size="15" /></button
                     ><button
                       class="btn btn-icon"
                       title="Edit"

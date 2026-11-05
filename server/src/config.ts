@@ -13,6 +13,12 @@ const schema = z.object({
     packetSize: z.number().int().min(188).max(65507),
     verifyEgressRoute: z.boolean(),
   }),
+  upstream: z
+    .object({
+      // Exact trusted HTTP origins (IPv4 literal + port); never a subnet wildcard.
+      allowedPrivateOrigins: z.array(z.string().url()).default([]),
+    })
+    .default({ allowedPrivateOrigins: [] }),
   storage: z.object({
     dataDirectory: z.string().min(1),
     importDirectory: z.string().min(1),
@@ -23,6 +29,23 @@ const schema = z.object({
 
 const configPath = resolve(process.env.STREAMER_CONFIG || 'config/streamer.json')
 export const config = schema.parse(JSON.parse(readFileSync(configPath, 'utf8')))
+for (const origin of config.upstream.allowedPrivateOrigins) {
+  const url = new URL(origin)
+  if (
+    !['http:', 'https:'].includes(url.protocol) ||
+    url.username ||
+    url.password ||
+    url.pathname !== '/' ||
+    url.search ||
+    url.hash ||
+    !/^\d+\.\d+\.\d+\.\d+$/.test(url.hostname) ||
+    !url.port
+  ) {
+    throw new Error(
+      `Invalid upstream.allowedPrivateOrigins entry: ${origin}. Use an exact IPv4 origin with explicit port.`,
+    )
+  }
+}
 export const projectRoot = process.cwd()
 export const dataDirectory = resolve(config.storage.dataDirectory)
 export const mediaDirectory = resolve(dataDirectory, 'media')

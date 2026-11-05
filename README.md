@@ -377,3 +377,27 @@ Use the sun/moon control on the login page or dashboard header to switch themes.
 The selection is stored locally in the browser (`multicast-studio-theme`);
 when no selection has been made, the browser's preferred color scheme is used.
 No backend or streaming settings are affected.
+
+## Trusted private HTTP upstreams
+
+By default, live HTTP(S) inputs and provider catalogs must resolve to public IPv4 addresses.
+To permit a trusted **specific** internal streaming endpoint, edit `config/streamer.json`:
+
+```json
+"upstream": { "allowedPrivateOrigins": ["http://10.50.0.190:8080"] }
+```
+
+Restart Multicast Studio after changing the configuration. Only literal IPv4 URLs
+with the exact scheme, host and port are eligible; DNS hostnames, loopback,
+link-local and unspecified addresses remain blocked. This is a server-side
+trust decision: allow only services you administer, and restrict the management
+network with firewall rules. The exception permits all HTTP paths on that origin.
+The upstream must still route through the configured management interface.
+
+## Swap multicast destinations
+
+On **Channels**, use the two-arrow button beside a channel, choose another
+channel, and confirm. The server stops both channels, atomically exchanges
+their multicast IP/port destinations, and restarts whichever were running.
+The channel records, media sources, profiles, and service IDs are preserved.
+This operation briefly interrupts transmission and is **not** gapless.
