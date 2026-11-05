@@ -401,3 +401,29 @@ channel, and confirm. The server stops both channels, atomically exchanges
 their multicast IP/port destinations, and restarts whichever were running.
 The channel records, media sources, profiles, and service IDs are preserved.
 This operation briefly interrupts transmission and is **not** gapless.
+
+### Trusted internal live inputs and destination swapping
+
+To ingest an internal HTTP MPEG-TS feed, add the exact source origin to
+`config/streamer.json` (restart the server after changing configuration):
+
+```json
+"upstream": { "allowedPrivateOrigins": ["http://10.50.0.190:8080"] }
+```
+
+The source must use a literal IPv4 address and the configured port. Other private
+addresses remain blocked. The management-interface route check remains enforced.
+
+For an Android Emulator Manager stream, enter
+`http://10.50.0.190:8080/live.ts` as a **Direct live stream** source.
+The emulator's FFmpeg `-listen 1` server accepts only one client and may terminate
+when that client disconnects. Close VLC or other viewers before starting the
+Multicast Studio channel. Multicast Studio cannot fix this upstream limitation;
+use a multi-client relay for reliable production ingestion.
+
+To exchange two channels' destinations, open **Channels**, select **Swap IP** on
+either channel, choose the other channel, and confirm. Both multicast IP **and**
+port are exchanged in one database transaction; channel identities, sources and
+profiles are unchanged. Active channels are briefly stopped and restarted; this
+is **not** a gapless handover. The swap control requires at least two channels.
+If you do not see **Swap IP**, rebuild/redeploy the frontend and refresh the page.

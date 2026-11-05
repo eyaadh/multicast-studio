@@ -415,9 +415,22 @@ async function action(channel: Channel, type: 'start' | 'stop' | 'restart') {
 const swapSource = ref<Channel | null>(null)
 const swapTargetId = ref('')
 const swapping = ref(false)
+const swapTargetOptions = computed(() =>
+  channels.value
+    .filter((channel) => channel.id !== swapSource.value?.id)
+    .map((channel) => ({
+      value: channel.id,
+      label: `${channel.name} · ${channel.groupIp}:${channel.port}`,
+    })),
+)
 function openSwap(channel: Channel) {
   swapSource.value = channel
   swapTargetId.value = ''
+  nextTick(() =>
+    document
+      .getElementById('channel-swap-panel')
+      ?.scrollIntoView({ behavior: 'smooth', block: 'center' }),
+  )
 }
 async function confirmSwap() {
   if (!swapSource.value || !swapTargetId.value) return
@@ -978,7 +991,7 @@ onUnmounted(() => {
                 <p class="text-xs muted mt-1">Channels requiring attention</p>
               </div>
             </div>
-            <div v-if="swapSource" class="panel p-5 space-y-3 mb-4">
+            <div v-if="swapSource" id="channel-swap-panel" class="panel p-5 space-y-3 mb-4">
               <div class="flex items-center justify-between gap-3">
                 <h3 class="font-semibold text-sm">Swap multicast destinations</h3>
                 <button class="btn btn-icon" title="Cancel" @click="swapSource = null">
@@ -990,17 +1003,16 @@ onUnmounted(() => {
                 channel whose destination you want to exchange. Active channels will briefly
                 restart.
               </p>
-              <div class="flex flex-wrap gap-2 items-center">
-                <select v-model="swapTargetId" class="field flex-1 min-w-48">
-                  <option value="" disabled>Select another channel</option>
-                  <option
-                    v-for="candidate in channels.filter((c) => c.id !== swapSource?.id)"
-                    :key="candidate.id"
-                    :value="candidate.id"
-                  >
-                    {{ candidate.name }} · {{ candidate.groupIp }}:{{ candidate.port }}
-                  </option>
-                </select>
+              <div class="flex flex-wrap gap-2 items-end">
+                <div class="min-w-48 flex-1">
+                  <SearchCombobox
+                    :model-value="swapTargetId"
+                    :options="swapTargetOptions"
+                    label="Destination channel"
+                    placeholder="Search channels…"
+                    @update:model-value="(value) => (swapTargetId = String(value ?? ''))"
+                  />
+                </div>
                 <button
                   class="btn btn-primary"
                   :disabled="!swapTargetId || swapping"
@@ -1112,12 +1124,12 @@ onUnmounted(() => {
                     >
                       <RotateCw :size="15" /></button
                     ><button
-                      class="btn btn-icon"
-                      title="Swap multicast destination"
-                      :disabled="busyIds.includes(ch.id) || swapping"
+                      class="btn gap-1.5"
+                      title="Exchange this channel's multicast IP and port with another channel"
+                      :disabled="busyIds.includes(ch.id) || swapping || channels.length < 2"
                       @click="openSwap(ch)"
                     >
-                      <ArrowLeftRight :size="15" /></button
+                      <ArrowLeftRight :size="15" /> <span>Swap IP</span></button
                     ><button
                       class="btn btn-icon"
                       title="Edit"

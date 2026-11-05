@@ -215,10 +215,19 @@ function ffmpegLiveInput(source: ProviderChannel): string[] {
         ]
       : []),
     '-i',
-    source.url,
+    source.url.trim(),
   ]
 }
 export function launchLiveIngest(source: ProviderChannel, directory: string) {
+  console.log('[Live Ingest] Starting:', {
+    url: source.url,
+    userAgent: source.userAgent,
+    referer: source.referer,
+    hasCookies: Boolean(source.cookie),
+    headerNames: Object.keys(source.headers || {}),
+    directory,
+  })
+
   return spawn(config.tools.ffmpeg, liveIngestArguments(source, directory), {
     stdio: ['ignore', 'pipe', 'pipe'] as const,
   })

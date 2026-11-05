@@ -220,3 +220,14 @@ test('buffered live HLS waits for new segments and signals transport discontinui
   assert.equal(args[args.indexOf('-mpegts_flags') + 1], '+initial_discontinuity')
   assert.equal(ffmpegArguments(channel, media).includes('-mpegts_flags'), false)
 })
+
+test('ingest errors report the underlying connection problem without leaking URL details', () => {
+  assert.equal(
+    summarizeFFmpegError(
+      '[tcp] Connection refused\n[in#0] Error opening input: Connection refused',
+    ),
+    'Connection refused (check the upstream listener and client limit)',
+  )
+  assert.equal(summarizeFFmpegError('[http] HTTP error 503\nError opening input'), 'HTTP 503')
+  assert.match(summarizeFFmpegError('Error opening input') || '', /another client/)
+})

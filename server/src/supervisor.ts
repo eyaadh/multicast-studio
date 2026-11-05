@@ -48,21 +48,31 @@ const states = new Map<string, RunningState>()
 let isShuttingDown = false
 // FFmpeg stderr can contain tokens and Authorization headers. Never log it verbatim.
 export function summarizeFFmpegError(stderr: string): string | null {
-  const known = [
-    /HTTP error (\d{3})/i,
-    /Server returned (\d{3})/i,
-    /Connection timed out/i,
-    /Connection refused/i,
-    /End of file/i,
-    /Invalid data found when processing input/i,
-    /Error opening input/i,
-    /Error while decoding stream/i,
-    /Conversion failed/i,
-    /No such file or directory/i,
+  // Prefer a useful HTTP/socket failure over FFmpeg's generic trailing
+  // "Error opening input". Never echo URLs, headers or credentials from stderr.
+  const known: Array<[RegExp, (match: RegExpMatchArray) => string]> = [
+    [/HTTP error (\d{3})/i, (m) => `HTTP ${m[1]}`],
+    [/Server returned (\d{3})/i, (m) => `HTTP ${m[1]}`],
+    [
+      /Connection refused/i,
+      () => 'Connection refused (check the upstream listener and client limit)',
+    ],
+    [/Connection timed out|timed out/i, () => 'Upstream connection timed out'],
+    [/HTTP error 4\d\d/i, () => 'Upstream HTTP client error'],
+    [/End of file/i, () => 'Upstream closed the connection'],
+    [/Invalid data found when processing input/i, () => 'Upstream returned invalid media data'],
+    [
+      /Error opening input/i,
+      () =>
+        'Error opening input (check upstream availability and whether another client is connected)',
+    ],
+    [/Error while decoding stream/i, () => 'Error while decoding stream'],
+    [/Conversion failed/i, () => 'Conversion failed'],
+    [/No such file or directory/i, () => 'No such file or directory'],
   ]
-  for (const pattern of known) {
+  for (const [pattern, message] of known) {
     const match = stderr.match(pattern)
-    if (match) return match[0]
+    if (match) return message(match)
   }
   return null
 }
