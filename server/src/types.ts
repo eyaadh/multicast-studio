@@ -36,6 +36,7 @@ export type Channel = {
   ttl: number
   autoStart: boolean
   autoRecover: boolean
+  directLive: boolean
   serviceId: number
   createdAt: string
   updatedAt: string

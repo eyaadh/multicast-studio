@@ -40,6 +40,7 @@ export type ChannelForm = {
   ttl: number
   autoStart: boolean
   autoRecover: boolean
+  directLive: boolean
   serviceId: number
 }
 export type Channel = ChannelForm & {

@@ -127,6 +127,7 @@ const channelSchema = z
     ttl: z.number().int().min(1).max(255),
     autoStart: z.boolean(),
     autoRecover: z.boolean(),
+    directLive: z.boolean().default(false),
     serviceId: z.number().int().min(1).max(65535),
   })
   .refine((v) => v.width % 2 === 0 && v.height % 2 === 0, {
@@ -136,6 +137,8 @@ const validateChannel = (input: unknown) => {
   const parsed = channelSchema.safeParse(input)
   if (!parsed.success) throw new Error(z.prettifyError(parsed.error))
   assertMulticast(parsed.data.groupIp, config.streaming.multicastCIDR)
+  if (parsed.data.directLive && (parsed.data.sourceType !== 'live' || parsed.data.profile !== 'mpeg2'))
+    throw new Error('Direct HTTP ingest requires a live source and MPEG-2 / MP2 profile')
   if (parsed.data.sourceType === 'media') {
     if (!parsed.data.mediaId || !getMedia(parsed.data.mediaId))
       throw new Error('Selected video does not exist')

@@ -61,6 +61,10 @@ if (
     db.exec('DROP TABLE channels; ALTER TABLE channels_next RENAME TO channels')
   })()
 }
+// Per-channel opt-in, backward-compatible with existing SQLite databases.
+if (!((db.prepare('PRAGMA table_info(channels)').all() as Array<{ name: string }>).some((col) => col.name === 'direct_live'))) {
+  db.exec('ALTER TABLE channels ADD COLUMN direct_live INTEGER NOT NULL DEFAULT 0')
+}
 db.exec(`CREATE TABLE IF NOT EXISTS providers (
  id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL,
  url TEXT NOT NULL, created_at TEXT NOT NULL
@@ -99,6 +103,7 @@ type ChannelRow = {
   ttl: number
   auto_start: number
   auto_recover: number
+  direct_live: number
   service_id: number
   created_at: string
   updated_at: string
@@ -136,6 +141,7 @@ const mapChannel = (r: ChannelRow): Channel => ({
   ttl: r.ttl,
   autoStart: !!r.auto_start,
   autoRecover: !!r.auto_recover,
+  directLive: !!r.direct_live,
   serviceId: r.service_id,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
@@ -181,17 +187,17 @@ export function saveChannel(data: ChannelValues, id?: string): Channel {
   }
   db.prepare(
     `INSERT INTO channels (id,name,description,media_id,source_type,provider_id,provider_channel_key,stream_url,
-    group_ip,port,profile,video_bitrate_kbps,audio_bitrate_kbps,width,height,fps,ttl,auto_start,auto_recover,service_id,created_at,updated_at)
+    group_ip,port,profile,video_bitrate_kbps,audio_bitrate_kbps,width,height,fps,ttl,auto_start,auto_recover,direct_live,service_id,created_at,updated_at)
     VALUES (@id,@name,@description,@mediaId,@sourceType,@providerId,@providerChannelKey,@streamUrl,
-    @groupIp,@port,@profile,@videoBitrateKbps,@audioBitrateKbps,@width,@height,@fps,@ttl,@autoStart,@autoRecover,@serviceId,@createdAt,@updatedAt)
+    @groupIp,@port,@profile,@videoBitrateKbps,@audioBitrateKbps,@width,@height,@fps,@ttl,@autoStart,@autoRecover,@directLive,@serviceId,@createdAt,@updatedAt)
     ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,media_id=excluded.media_id,
     source_type=excluded.source_type,provider_id=excluded.provider_id,provider_channel_key=excluded.provider_channel_key,
     stream_url=excluded.stream_url,group_ip=excluded.group_ip,port=excluded.port,profile=excluded.profile,
     video_bitrate_kbps=excluded.video_bitrate_kbps,audio_bitrate_kbps=excluded.audio_bitrate_kbps,
     width=excluded.width,height=excluded.height,fps=excluded.fps,ttl=excluded.ttl,
-    auto_start=excluded.auto_start,auto_recover=excluded.auto_recover,
+    auto_start=excluded.auto_start,auto_recover=excluded.auto_recover,direct_live=excluded.direct_live,
     service_id=excluded.service_id,updated_at=excluded.updated_at`,
-  ).run({ ...channel, autoStart: +channel.autoStart, autoRecover: +channel.autoRecover })
+  ).run({ ...channel, autoStart: +channel.autoStart, autoRecover: +channel.autoRecover, directLive: +channel.directLive })
   return channel
 }
 /** Atomically exchange multicast destinations without deleting either channel. */

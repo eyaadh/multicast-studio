@@ -158,11 +158,13 @@ const resolution = computed({
 function setSourceType(value: ChoiceValue) {
   if (value !== 'media' && value !== 'live') return
   currentForm.value.sourceType = value
+  if (value !== 'live') currentForm.value.directLive = false
   switchSourceType()
 }
 function setProfile(value: ChoiceValue) {
   if (value !== 'h264' && value !== 'mpeg4' && value !== 'mpeg2' && value !== 'copy') return
   currentForm.value.profile = value
+  if (value !== 'mpeg2') currentForm.value.directLive = false
   onProfileChange()
 }
 function closeStreamPreview() {
@@ -314,6 +316,7 @@ function defaultForm(): ChannelForm {
     ttl: 1,
     autoStart: true,
     autoRecover: true,
+    directLive: false,
     serviceId: 101,
   }
 }
@@ -502,6 +505,7 @@ function editChannel(channel: Channel) {
     ttl,
     autoStart,
     autoRecover,
+    directLive,
     serviceId,
   } = channel
   currentForm.value = {
@@ -523,6 +527,7 @@ function editChannel(channel: Channel) {
     ttl,
     autoStart,
     autoRecover,
+    directLive,
     serviceId,
   }
   modalOpen.value = true
@@ -1911,6 +1916,13 @@ onUnmounted(() => {
                   overload the VM.
                 </p>
               </div>
+              <label v-if="currentForm.sourceType === 'live' && currentForm.profile === 'mpeg2'" class="flex items-start gap-3 rounded-lg border border-zinc-300/60 dark:border-zinc-700 p-3 sm:col-span-2 cursor-pointer">
+                <input v-model="currentForm.directLive" type="checkbox" class="accent-emerald-500 w-4 h-4 mt-0.5" />
+                <span class="space-y-1">
+                  <span class="block text-sm font-medium">Direct HTTP ingest (25 FPS normalization)</span>
+                  <span class="block text-xs muted">Bypass HLS prebuffering for this live channel. Uses the selected frame rate and MPEG-2 / MP2 encoding; intended for stable HTTP MPEG-TS sources.</span>
+                </span>
+              </label>
               <template v-if="currentForm.profile !== 'copy'"
                 ><div>
                   <SearchCombobox

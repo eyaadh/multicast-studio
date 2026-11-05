@@ -418,7 +418,7 @@ export async function startChannel(id: string, recovering = false): Promise<Chan
     s.terminationReason = null
     s.bufferWindowSeconds = 0
     clearTermination(s)
-    if (channel.sourceType === 'media') {
+    if (channel.sourceType === 'media' || (channel.sourceType === 'live' && channel.directLive)) {
       const child = launchFFmpeg(channel, source)
       s.process = child
       s.pid = child.pid ?? null

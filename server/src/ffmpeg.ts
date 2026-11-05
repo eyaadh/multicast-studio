@@ -61,7 +61,7 @@ export function ffmpegArguments(
         bufferedPlaylist,
       ]
     : isLive
-      ? ffmpegLiveInput(source as ProviderChannel)
+      ? [...(ch.directLive ? ['-fflags', '+genpts+discardcorrupt'] : []), ...ffmpegLiveInput(source as ProviderChannel)]
       : ['-re', '-stream_loop', '-1', '-i', (source as Media).storedPath]
   const base = [
     '-hide_banner',
@@ -89,7 +89,9 @@ export function ffmpegArguments(
     const codec =
       ch.profile === 'h264' ? 'libx264' : ch.profile === 'mpeg4' ? 'mpeg4' : 'mpeg2video'
     const audio = ch.profile === 'h264' ? 'aac' : 'mp2'
-    const vf = `scale=${ch.width}:${ch.height}:force_original_aspect_ratio=decrease,pad=${ch.width}:${ch.height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${ch.fps},format=yuv420p`
+    const vf = ch.directLive && isLive
+      ? `fps=${ch.fps}`
+      : `scale=${ch.width}:${ch.height}:force_original_aspect_ratio=decrease,pad=${ch.width}:${ch.height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${ch.fps},format=yuv420p`
     codecArgs = [
       '-vf',
       vf,
