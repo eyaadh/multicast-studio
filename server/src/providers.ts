@@ -128,7 +128,7 @@ export async function fetchCatalogText(text: string, hops = 0): Promise<string> 
         localAddress: managementIP,
         lookup: (_hostname, _opts, cb) => cb(null, ip, 4),
         headers: {
-          'user-agent': 'MulticastStudio/1.2',
+          'user-agent': process.env.PROVIDER_USER_AGENT || 'MulticastStudio/1.2',
           accept:
             'application/x-mpegurl, audio/x-mpegurl, application/octet-stream, text/plain, application/json, */*',
           'accept-encoding': 'gzip, deflate, br',
@@ -144,7 +144,14 @@ export async function fetchCatalogText(text: string, hops = 0): Promise<string> 
         }
         if (status !== 200) {
           res.resume()
-          reject(new Error(`Playlist returned HTTP ${status}`))
+          reject(
+            new Error(
+              `Playlist returned HTTP ${status} (${url.origin}). ` +
+                (status === 403
+                  ? 'The upstream provider denied access. Check its access requirements.'
+                  : 'Check upstream availability.'),
+            ),
+          )
           return
         }
         const encoding = String(res.headers['content-encoding'] || '')
