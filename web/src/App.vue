@@ -1916,11 +1916,23 @@ onUnmounted(() => {
                   overload the VM.
                 </p>
               </div>
-              <label v-if="currentForm.sourceType === 'live' && currentForm.profile === 'mpeg2'" class="flex items-start gap-3 rounded-lg border border-zinc-300/60 dark:border-zinc-700 p-3 sm:col-span-2 cursor-pointer">
-                <input v-model="currentForm.directLive" type="checkbox" class="accent-emerald-500 w-4 h-4 mt-0.5" />
+              <label
+                v-if="currentForm.sourceType === 'live' && currentForm.profile === 'mpeg2'"
+                class="flex items-start gap-3 rounded-lg border border-zinc-300/60 dark:border-zinc-700 p-3 sm:col-span-2 cursor-pointer"
+              >
+                <input
+                  v-model="currentForm.directLive"
+                  type="checkbox"
+                  class="accent-emerald-500 w-4 h-4 mt-0.5"
+                />
                 <span class="space-y-1">
-                  <span class="block text-sm font-medium">Direct HTTP ingest (25 FPS normalization)</span>
-                  <span class="block text-xs muted">Bypass HLS prebuffering for this live channel. Uses the selected frame rate and MPEG-2 / MP2 encoding; intended for stable HTTP MPEG-TS sources.</span>
+                  <span class="block text-sm font-medium"
+                    >Direct HTTP ingest (25 FPS normalization)</span
+                  >
+                  <span class="block text-xs muted"
+                    >Bypass HLS prebuffering for this live channel. Uses the selected frame rate and
+                    MPEG-2 / MP2 encoding; intended for stable HTTP MPEG-TS sources.</span
+                  >
                 </span>
               </label>
               <template v-if="currentForm.profile !== 'copy'"

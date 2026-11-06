@@ -62,7 +62,11 @@ if (
   })()
 }
 // Per-channel opt-in, backward-compatible with existing SQLite databases.
-if (!((db.prepare('PRAGMA table_info(channels)').all() as Array<{ name: string }>).some((col) => col.name === 'direct_live'))) {
+if (
+  !(db.prepare('PRAGMA table_info(channels)').all() as Array<{ name: string }>).some(
+    (col) => col.name === 'direct_live',
+  )
+) {
   db.exec('ALTER TABLE channels ADD COLUMN direct_live INTEGER NOT NULL DEFAULT 0')
 }
 db.exec(`CREATE TABLE IF NOT EXISTS providers (
@@ -197,7 +201,12 @@ export function saveChannel(data: ChannelValues, id?: string): Channel {
     width=excluded.width,height=excluded.height,fps=excluded.fps,ttl=excluded.ttl,
     auto_start=excluded.auto_start,auto_recover=excluded.auto_recover,direct_live=excluded.direct_live,
     service_id=excluded.service_id,updated_at=excluded.updated_at`,
-  ).run({ ...channel, autoStart: +channel.autoStart, autoRecover: +channel.autoRecover, directLive: +channel.directLive })
+  ).run({
+    ...channel,
+    autoStart: +channel.autoStart,
+    autoRecover: +channel.autoRecover,
+    directLive: +channel.directLive,
+  })
   return channel
 }
 /** Atomically exchange multicast destinations without deleting either channel. */

@@ -137,7 +137,10 @@ const validateChannel = (input: unknown) => {
   const parsed = channelSchema.safeParse(input)
   if (!parsed.success) throw new Error(z.prettifyError(parsed.error))
   assertMulticast(parsed.data.groupIp, config.streaming.multicastCIDR)
-  if (parsed.data.directLive && (parsed.data.sourceType !== 'live' || parsed.data.profile !== 'mpeg2'))
+  if (
+    parsed.data.directLive &&
+    (parsed.data.sourceType !== 'live' || parsed.data.profile !== 'mpeg2')
+  )
     throw new Error('Direct HTTP ingest requires a live source and MPEG-2 / MP2 profile')
   if (parsed.data.sourceType === 'media') {
     if (!parsed.data.mediaId || !getMedia(parsed.data.mediaId))
